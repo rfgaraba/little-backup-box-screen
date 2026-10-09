@@ -13,7 +13,7 @@ APP = Path('/opt/little-backup-box-screen')
 ETC = Path('/etc/little-backup-box-screen')
 UNIT = Path('/etc/systemd/system/little-backup-box-screen.service')
 SERVICE = UNIT.name
-FILES = ('server.py', 'web/index.html', 'web/app.js', 'web/style.css', 'LICENSE', 'README.md', 'config.example.json')
+FILES = ('server.py', 'native.py', 'native_install.py', 'tools/display_probe.py', 'web/index.html', 'web/app.js', 'web/style.css', 'LICENSE', 'README.md', 'config.example.json')
 
 
 def validate_config(config, check_paths=True):
@@ -125,8 +125,13 @@ def ensure_idle():
     return True
 
 
-def install(mode, config):
-    if ensure_idle():
+def install(mode, config, display='web', framebuffer=None):
+    import native_install
+    if display == 'native':
+        native_install.check_dependencies(framebuffer)
+    active = ensure_idle()
+    native_install.stop()
+    if active:
         subprocess.run(['systemctl', 'stop', SERVICE], check=True)
     APP.mkdir(parents=True, exist_ok=True)
     ETC.mkdir(parents=True, exist_ok=True)
@@ -147,7 +152,7 @@ def install(mode, config):
             backup.chmod(0o600)
         target.write_text(json.dumps(config, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         target.chmod(0o600)
-    (ETC / 'install.json').write_text(json.dumps({'mode': mode}) + '\n', encoding='utf-8')
+    (ETC / 'install.json').write_text(json.dumps({'mode': mode, 'display': display, 'framebuffer': framebuffer}) + '\n', encoding='utf-8')
     UNIT.write_text(service_text(mode), encoding='utf-8')
     UNIT.chmod(0o644)
     subprocess.run(['systemctl', 'daemon-reload'], check=True)
@@ -159,6 +164,10 @@ def install(mode, config):
                 status = json.load(response)
             if status['demo'] != (mode == 'demo'):
                 raise ValueError('El servicio arrancó con un modo inesperado')
+            if display == 'native':
+                native_install.install(framebuffer)
+            else:
+                native_install.disable()
             return
         except (OSError, KeyError):
             time.sleep(.5)
@@ -171,15 +180,30 @@ def main():
     parser.add_argument('--config', type=Path, help='Configuración del motor real')
     parser.add_argument('--replace-config', action='store_true', help='Reemplazar configuración existente y guardar copia anterior')
     parser.add_argument('--dry-run', action='store_true', help='Mostrar plan sin escribir ni iniciar servicios')
+    parser.add_argument('--display', choices=('web', 'native'), help='Interfaz nativa sin escritorio o navegador; conserva la opción instalada')
+    parser.add_argument('--framebuffer', help='Dispositivo de pantalla SPI para Qt, por ejemplo /dev/fb1')
     args = parser.parse_args()
     if sys.version_info < (3, 10):
         parser.error('Se necesita Python 3.10 o posterior')
     try:
         mode, config = plan(args.mode, args.config, args.replace_config, check_paths=not args.dry_run)
+        previous = read_json(ETC / 'install.json') if (ETC / 'install.json').exists() else {}
+        display = args.display or previous.get('display', 'web')
+        framebuffer = args.framebuffer or previous.get('framebuffer')
+        if display not in ('web', 'native'):
+            raise ValueError('Interfaz inválida en los datos de instalación')
+        if display == 'native':
+            from native_install import validate_framebuffer
+            validate_framebuffer(framebuffer, check_paths=False)
+        elif args.framebuffer:
+            raise ValueError('--framebuffer requiere --display native')
         print(f'Modo: {mode}\nAplicación: {APP}\nConfiguración: {ETC}\nServicio: {SERVICE}\nURL local: http://127.0.0.1:8080')
         if args.dry_run:
             print('\nNo se modificó el sistema. Las rutas del motor se comprobarán al instalar.\n')
             print(service_text(mode))
+            if display == 'native':
+                from native_install import service_text as display_service
+                print(display_service(framebuffer))
             return
         if sys.platform != 'linux' or not hasattr(os, 'geteuid') or os.geteuid() != 0:
             raise ValueError('Instalá en la Raspberry Pi con sudo python3 install.py')
@@ -188,8 +212,8 @@ def main():
         if not Path('/usr/bin/python3').is_file():
             raise ValueError('Se necesita Python en /usr/bin/python3')
         subprocess.run(['/usr/bin/python3', '-c', 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'], check=True)
-        install(mode, config)
-        print('\nInstalación completa. Abrí http://127.0.0.1:8080 en el navegador de la Raspberry Pi.')
+        install(mode, config, display, framebuffer)
+        print('\nInstalación completa. ' + ('La interfaz nativa inicia en la pantalla SPI.' if display == 'native' else 'Abrí http://127.0.0.1:8080 en el navegador de la Raspberry Pi.'))
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'Error: {exc}\n')
 

@@ -2,6 +2,61 @@
 
 Interfaz en español para una pantalla horizontal de **480 × 320**, con cuatro pestañas fijas: Estado, Copiar, Archivos y Ajustes. Botones de al menos 48 px, listas de dos elementos por página y flujo Origen → Destino → Confirmar → Progreso → Resultado. Ninguna vista necesita desplazamiento.
 
+## Raspberry Pi OS Lite: pantalla nativa SPI
+
+El enfoque para Raspberry Pi 5 (4 GB, sistema en microSD) con Raspberry Pi OS Lite de 64 bits y pantalla MHS35 es una **aplicación nativa Python + Qt**, sin Chromium, escritorio ni monitor HDMI. `native.py` dibuja mediante Qt LinuxFB en el framebuffer de la pantalla SPI y consulta el servicio local `server.py`. El servicio conserva el motor Little Backup Box, los trabajos y sus registros; cerrar o reiniciar solo la interfaz no cancela una copia. Wi-Fi puede usarse para administrar por SSH; la aplicación no modifica USB, Wi-Fi ni Bluetooth ni añade transferencias inalámbricas al motor.
+
+La compatibilidad del controlador MHS35 con la Pi 5 y tu kernel debe comprobarse en el equipo. [LCD-show/MHS35-show](https://github.com/goodtft/LCD-show/blob/master/MHS35-show) incluye ajustes X11, HDMI y, según la versión, framebuffer copying. Haber ejecutado ese script no garantiza que el framebuffer SPI ni el táctil estén disponibles para Qt. El instalador de esta aplicación no ejecuta LCD-show ni modifica el arranque o los controladores.
+
+Primero, por SSH desde la carpeta del proyecto:
+
+```sh
+python3 tools/display_probe.py
+```
+
+Buscá el framebuffer identificado como la pantalla SPI y su tamaño 480 × 320. **No asumir que es `/dev/fb1`**: puede variar según el controlador. Si no aparece o solo aparece la salida de otra pantalla, hay que resolver el controlador antes de instalar la interfaz; no se selecciona HDMI como alternativa automática.
+
+Instalar Qt y probar manualmente (reemplazar `/dev/fb1` por el dispositivo identificado):
+
+```sh
+sudo apt update
+sudo apt install python3-pyqt6
+# Terminal SSH 1: servidor demo, sin copias reales
+python3 server.py
+# Terminal SSH 2: pantalla, sin navegador ni escritorio
+sudo env QT_QPA_PLATFORM=linuxfb:fb=/dev/fb1 QT_QPA_FB_HIDECURSOR=1 python3 native.py
+```
+
+Si hay una sesión X11, un servicio fbcp o una consola dibujando sobre el mismo framebuffer, debe dejar de hacerlo antes de esta prueba. No deshabilitar servicios a ciegas: comprobar qué inicia LCD-show en esa instalación. La calibración de `/etc/X11/xorg.conf.d/99-calibration.conf` no se aplica a Qt sin X11. Qt usa las entradas Linux mediante libinput/evdev; consultar [Qt: entradas en Linux embebido](https://doc.qt.io/qt-6/inputs-linux-device.html).
+
+Una vez comprobados imagen y táctil, cerrar las dos pruebas manuales e instalar con arranque automático:
+
+```sh
+python3 install.py --display native --framebuffer /dev/fb1 --dry-run
+sudo bash install.sh --display native --framebuffer /dev/fb1
+```
+
+Para el motor real, añadir `--mode real --config config.local.json` al comando. La interfaz se ejecuta como usuario temporal con acceso a los grupos `video` e `input`; el motor conserva sus permisos existentes. Las actualizaciones sin opciones conservan la interfaz y el framebuffer instalados. Una instalación nueva sin `--display` conserva el modo web por compatibilidad.
+
+El servicio de pantalla es independiente del servicio del motor:
+
+```sh
+systemctl status little-backup-box-display
+journalctl -u little-backup-box-display -n 50
+# Reinicia solo la interfaz; el trabajo permanece en el servidor
+sudo systemctl restart little-backup-box-display
+```
+
+Para ajustar el táctil, se puede crear `/etc/little-backup-box-screen/display.env`; el instalador lo conserva. Por ejemplo, **solo si Qt usa libinput**, una matriz de identidad (no corrige ninguna rotación):
+
+```ini
+QT_QPA_LIBINPUT_TOUCH_MATRIX="1 0 0 0 1 0"
+```
+
+La matriz real depende de la orientación y la calibración del panel. Para evdev, Qt ofrece `QT_QPA_EVDEV_TOUCHSCREEN_PARAMETERS` con el dispositivo y los parámetros admitidos. No se inventa una calibración antes de probar el hardware.
+
+Para previsualizar la interfaz nativa en un equipo con escritorio, instalar PyQt6, iniciar `server.py` y ejecutar `python native.py --windowed`. La interfaz nativa y la instalación sobre el LCD real aún requieren validación en la Raspberry Pi.
+
 ## Ejecutar en modo demo
 
 Requiere Python 3.10 o posterior; el servidor no necesita dependencias externas.
@@ -19,7 +74,7 @@ Instalar primero [Little Backup Box](https://github.com/outdoorbits/little-backu
 1. Copiar `config.example.json` a `config.local.json` y ajustar `engine_dir` al directorio real que contiene `backup.py`.
 2. Configurar los orígenes y destinos. `engine` admite `camera`, `anyusb`, `usb`, `internal` y `nvme` para origen; `usb`, `internal` y `nvme` para destino. Son perfiles configurados, no un inventario de dispositivos conectados. Reemplazar los UUID de ejemplo por los reales; `preset` usa el formato de identificador del motor. Identificadores distintos son obligatorios cuando ambos perfiles tienen el mismo tipo.
 3. Ajustar `files_root` a la carpeta montada que se desea explorar. El navegador de archivos es de solo lectura, paginado y no sigue enlaces simbólicos.
-4. Ejecutar `python3 server.py --config config.local.json` con los permisos necesarios para la instalación del motor. El servidor escucha únicamente en loopback. Usar un navegador local en modo kiosco, por ejemplo `chromium --kiosk http://127.0.0.1:8080` con la resolución del sistema fijada a 480 × 320.
+4. Ejecutar `python3 server.py --config config.local.json` con los permisos necesarios para la instalación del motor. El servidor escucha únicamente en loopback. En Raspberry Pi OS Lite, iniciar la interfaz nativa como se indica arriba. En un sistema con escritorio también se puede usar un navegador local en modo kiosco, por ejemplo `chromium --kiosk http://127.0.0.1:8080`.
 
 El adaptador pasa argumentos como una lista, sin shell, conserva el origen y desactiva movimiento secundario, renombrado, modificación EXIF, miniaturas y apagado. Checksum se puede activar o desactivar en Ajustes → Copia; se activa por defecto. No hay botón de cancelación porque detener solo el proceso principal puede dejar transferencias hijas activas.
 
@@ -65,6 +120,7 @@ Archivos instalados:
 - Configuración: `/etc/little-backup-box-screen/config.json`.
 - Registro del motor: `/var/lib/little-backup-box-screen/engine.log`.
 - Servicio: `little-backup-box-screen.service`.
+- Pantalla nativa opcional: `little-backup-box-display.service`, con ajustes opcionales en `/etc/little-backup-box-screen/display.env`.
 
 Para actualizar, extraer un paquete nuevo y ejecutar otra vez `sudo bash install.sh`: conserva el modo y la configuración existentes. Si hay un respaldo activo, un puerto ocupado por otra instancia o un servicio activo cuyo estado no puede leerse, el instalador se detiene antes de cambiar los archivos. Evitar iniciar respaldos durante la actualización. Para cambiar una configuración existente se requiere `--config archivo.json --replace-config`; guarda la versión anterior en `config.previous.json`. Solo conserva la última copia anterior.
 
