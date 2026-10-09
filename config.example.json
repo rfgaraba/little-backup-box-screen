@@ -1,0 +1,7 @@
+{
+  "engine_dir": "/var/www/html/little-backup-box",
+  "python": "/usr/bin/python3",
+  "sources": [{"id":"camera","label":"Cámara USB","engine":"camera"},{"id":"card","label":"Tarjeta USB","engine":"anyusb","preset":"--uuid REEMPLAZAR-UUID-ORIGEN"}],
+  "destinations": [{"id":"ssd","label":"SSD de respaldo","engine":"usb","preset":"--uuid REEMPLAZAR-UUID-DESTINO"}],
+  "files_root": "/media/backup"
+}

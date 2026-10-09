@@ -1,0 +1,1 @@
+{"name":"little-backup-box-screen","private":true,"version":"0.1.0","scripts":{"start":"python server.py","test":"python -m unittest discover -s tests","test:ui":"node tests/ui.cjs"},"devDependencies":{"playwright":"^1.58.0"}}
