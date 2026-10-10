@@ -63,14 +63,26 @@ function pager(count, onChange, parent) {
 }
 async function loadFiles() { files = await api(`/api/files?path=${encodeURIComponent(path)}&page=${page}`); page = files.page; }
 function jobView() {
-  const job = status.job, running = job.state === 'running';
+  const job = status.job, running = ['running', 'cancelling'].includes(job.state), metrics = job.metrics;
   content.append(text('h1', running ? 'Respaldo en curso' : job.state === 'idle' ? 'Listo para respaldar' : 'Resultado del respaldo'));
   const c = card(job.message);
-  if (job.progress !== null) { c.prepend(text('div', `${job.progress}%`, 'metric')); }
+  if (job.progress !== null) { c.prepend(text('div', `${job.progress}%${metrics ? ' · etapa por archivos' : ''}`, metrics ? 'hint' : 'metric')); }
   if (running) { const p = document.createElement('progress'); p.max = 100; if (job.progress !== null) p.value = job.progress; p.setAttribute('aria-label', 'Progreso del respaldo'); c.append(p); }
   content.append(c);
+  if (metrics) {
+    c.classList.add('transfer-metrics');
+    const speed = metrics.write_bps == null ? 'sin datos' : `${(metrics.write_bps / 1000000).toFixed(1)} MB/s`;
+    const written = metrics.disk_written_bytes == null ? '' : ` · ${(metrics.disk_written_bytes / 1e9).toFixed(2)} GB`;
+    const elapsed = metrics.elapsed_seconds || 0;
+    c.append(text('p', `Escritura: ${speed}${written}`), text('p', `Tiempo: ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}${metrics.eta ? ' · Restante: ' + metrics.eta : ''}`));
+    if (metrics.files_total != null) c.append(text('p', `Archivos: ${metrics.files_processed} / ${metrics.files_total}`));
+  }
   if (job.state === 'idle') content.append(text('p', status.demo ? 'Probá el flujo sin copiar archivos.' : 'Seleccioná origen y destino configurados.'));
-  content.append(button(running ? 'Ver progreso' : 'Nuevo respaldo', () => { tab = 'Copiar'; if (!running) { step = -1; page = 0; source = destination = null; } }, 'primary'));
+  if (!running) content.append(button('Nuevo respaldo', () => { tab = 'Copiar'; step = -1; page = 0; source = destination = null; }, 'primary'));
+  if (job.state === 'running') content.append(button('Cancelar respaldo', async () => {
+    if (!confirm('¿Cancelar el respaldo? Puede quedar un archivo incompleto. Esperá la confirmación antes de retirar dispositivos.')) return;
+    status = await api('/api/cancel', {});
+  }));
 }
 function render() {
   document.querySelector('#mode').textContent = status.demo ? 'DEMO' : '';
@@ -83,7 +95,7 @@ function render() {
   if (error) { content.append(text('h1', 'No se pudo continuar'), card(error)); content.append(button('Volver', () => { error = ''; }, 'primary')); return; }
   if (tab === 'Estado') return jobView();
   if (tab === 'Copiar') {
-    if (status.job.state === 'running' || step === 3) return jobView();
+    if (['running', 'cancelling'].includes(status.job.state) || step === 3) return jobView();
     if (step === -1) {
       source = devices.sources.find(d => d.id === devices.automatic?.source);
       destination = devices.destinations.find(d => d.id === devices.automatic?.destination);
@@ -155,7 +167,27 @@ function render() {
             await api('/api/wifi', {action: 'connect', ...credentials}); wifi = await api('/api/wifi');
           }), hotspot);
         }
-      } else content.append(card(status.demo ? 'Modo demo · sin motor conectado' : 'Adaptador CLI de Little Backup Box', 'Ajustes de copia: solo esta sesión'));
+      } else if (setting === 'Dispositivos') {
+        const list = [...new Map([...devices.sources, ...devices.destinations]
+          .filter(d => d.disk && d.id.startsWith('auto:')).map(d => [d.disk, d])).values()];
+        const active = ['running', 'cancelling'].includes(status.job.state);
+        content.append(text('p', active ? 'Esperá a que termine el respaldo.' : status.removal?.message || 'Elegí el dispositivo que querés retirar.', 'hint'));
+        page = Math.min(page, Math.max(0, Math.ceil(list.length / 2) - 1));
+        list.slice(page * 2, page * 2 + 2).forEach(d => {
+          const b = button(d.label, async () => {
+            if (!confirm(`¿Retirar ${d.label}? Se desmontarán todas las particiones de ese disco. Esperá la confirmación antes de desconectarlo.`)) return;
+            busy = true;
+            try { status = await api('/api/remove', {device: d.id}); devices = await api('/api/devices'); }
+            finally { busy = false; }
+          });
+          b.disabled = active || busy || status.removing || status.demo;
+          content.append(b);
+        });
+        if (!list.length) content.append(text('p', 'No hay discos extraíbles conectados.'));
+        if (list.length > 2) pager(Math.ceil(list.length / 2), p => { page = p; });
+      } else {
+        content.append(button('Retirar dispositivos', () => { setting = 'Dispositivos'; page = 0; }));
+      }
       content.append(button('Volver a ajustes', () => { setting = null; }, 'primary'));
     }
   }

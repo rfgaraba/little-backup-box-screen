@@ -3,7 +3,7 @@ import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
-from hardware import discover, Wifi, network_info
+from hardware import discover, Wifi, network_info, remove_device
 from server import Engine
 
 
@@ -13,6 +13,27 @@ def disk(name, transport, uuid, mount=None, model=''):
 
 
 class HardwareTests(unittest.TestCase):
+    def test_safe_removal_unmounts_all_partitions_then_powers_off(self):
+        detected = {'sources': [{'id': 'auto:a', 'disk': '/dev/sda'}]}
+        mounted = {'blockdevices': [{'name': '/dev/sda', 'children': [
+            {'name': '/dev/sda1', 'uuid': 'a', 'mountpoints': ['/media/usb_target', '/mnt/extreme']}]}]}
+        unmounted = {'blockdevices': [{'name': '/dev/sda', 'children': [
+            {'name': '/dev/sda1', 'uuid': 'a', 'mountpoints': [None]}]}]}
+        outputs = [Mock(stdout=json.dumps(mounted)), Mock(), Mock(), Mock(stdout=json.dumps(unmounted)), Mock()]
+        with patch('hardware.discover', return_value=detected), patch('hardware.shutil.which', return_value='/usr/bin/udisksctl'), patch('hardware.subprocess.run', side_effect=outputs) as run:
+            self.assertIn('desconectarlo', remove_device('auto:a')['message'])
+            self.assertEqual(run.call_args_list[-1].args[0], ['udisksctl', 'power-off', '--block-device', '/dev/sda', '--no-user-interaction'])
+            self.assertEqual(run.call_args_list[1].args[0], ['umount', '--', '/media/usb_target'])
+
+    def test_safe_removal_never_powers_off_busy_or_system_disks(self):
+        detected = {'sources': [{'id': 'auto:a', 'disk': '/dev/sda'}]}
+        for mount in ('/', '/media/usb_target'):
+            tree = {'blockdevices': [{'name': '/dev/sda', 'uuid': 'a', 'mountpoints': [mount]}]}
+            with patch('hardware.discover', return_value=detected), patch('hardware.shutil.which', return_value='/usr/bin/udisksctl'), patch('hardware.subprocess.run', side_effect=[Mock(stdout=json.dumps(tree)), subprocess.CalledProcessError(1, 'umount')]) as run:
+                with self.assertRaises(ValueError):
+                    remove_device('auto:a')
+                self.assertFalse(any(c.args[0][0] == 'udisksctl' for c in run.call_args_list))
+
     def test_network_info_reports_real_wifi_and_default_interface(self):
         interfaces = [{'ifname': 'lo', 'addr_info': []},
                       {'ifname': 'wlan0', 'operstate': 'UP', 'address': 'aa:bb:cc:dd:ee:ff',

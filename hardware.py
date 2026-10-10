@@ -4,7 +4,52 @@ import subprocess
 import secrets
 import threading
 import socket
+import shutil
 from pathlib import Path
+
+
+def remove_device(identifier):
+    # Resolve only currently detected non-system devices, never a path from the client.
+    devices = discover()['sources']
+    device = next((d for d in devices if d['id'] == identifier), None)
+    if not device:
+        raise ValueError('El dispositivo ya no está conectado o no admite retirada segura')
+    disk = device['disk']
+    if not shutil.which('udisksctl'):
+        raise ValueError('Falta udisksctl; ejecutá el instalador para agregar udisks2')
+    def mounts():
+        data = json.loads(subprocess.run(['lsblk', '--json', '--paths', '--output',
+                                         'NAME,UUID,MOUNTPOINTS'], capture_output=True, text=True,
+                                        check=True, timeout=5).stdout)
+        selected = next((d for d in data['blockdevices'] if d['name'] == disk), None)
+        if selected is None:
+            raise ValueError('El dispositivo se desconectó antes de retirarlo')
+        points = []
+        identifiers = []
+        def visit(node):
+            if node.get('uuid'):
+                identifiers.append('auto:' + node['uuid'])
+            points.extend(p for p in node.get('mountpoints', []) or [] if p)
+            for child in node.get('children', []):
+                visit(child)
+        visit(selected)
+        if identifier not in identifiers:
+            raise ValueError('El dispositivo cambió; seleccioná nuevamente el disco')
+        if any(p in ('/', '/boot', '/boot/firmware', '/usr', '/var', '/etc', '/home', '/opt', '/run') for p in points):
+            raise ValueError('No se puede retirar el disco del sistema')
+        return sorted(set(points), key=len, reverse=True)
+    try:
+        for mount in mounts():
+            # Normal unmount flushes pending filesystem writes and refuses busy mounts.
+            subprocess.run(['umount', '--', mount], check=True, capture_output=True,
+                           text=True, timeout=30)
+        if mounts():
+            raise ValueError('El disco volvió a montarse; no se confirmó la retirada segura')
+        subprocess.run(['udisksctl', 'power-off', '--block-device', disk, '--no-user-interaction'],
+                       check=True, capture_output=True, text=True, timeout=30)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise ValueError('No se pudo retirar el dispositivo: puede estar ocupado o no admitir apagado seguro. No lo desconectes todavía') from exc
+    return {'device': identifier, 'message': 'Dispositivo retirado. Ya podés desconectarlo.'}
 
 
 def network_info():

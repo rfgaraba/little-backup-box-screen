@@ -6,9 +6,11 @@ from pathlib import Path
 import subprocess
 import threading
 import time
-from hardware import discover, Wifi, network_info
+from hardware import discover, Wifi, network_info, remove_device
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
+from telemetry import BackupTelemetry
+from process_control import stop_group
 
 ROOT = Path(__file__).resolve().parent
 SOURCE_TYPES = {'camera', 'anyusb', 'usb', 'internal', 'nvme'}
@@ -39,6 +41,11 @@ class Engine:
         self.job = {'state': 'idle', 'progress': None, 'message': 'Listo para respaldar'}
         self.checksum = True
         self.wifi = Wifi()
+        self.target_disk = None
+        self.cancel_requested = threading.Event()
+        self.removing = False
+        self.removal = {}
+        self.cleanup_failed = False
 
     def devices(self):
         if self.config:
@@ -71,7 +78,35 @@ class Engine:
 
     def status(self):
         with self.lock:
-            return {'demo': self.config is None, 'job': dict(self.job), 'checksum': self.checksum}
+            return {'demo': self.config is None, 'job': dict(self.job), 'checksum': self.checksum,
+                    'removing': self.removing, 'removal': dict(self.removal)}
+
+    def cancel(self):
+        with self.lock:
+            if self.job['state'] != 'running':
+                raise ValueError('No hay un respaldo en curso para cancelar')
+            self.cancel_requested.set()
+            self.job.update(state='cancelling', message='Cancelando · esperá antes de retirar dispositivos')
+
+    def remove(self, identifier):
+        with self.lock:
+            if self.job['state'] in ('running', 'cancelling') or self.cleanup_failed:
+                raise ValueError('Primero esperá a que termine o se cancele el respaldo')
+            if self.removing:
+                raise ValueError('Ya se está retirando un dispositivo')
+            if not self.config:
+                raise ValueError('La retirada segura no está disponible en demo')
+            self.removing = True
+            self.removal = {}
+        try:
+            result = remove_device(identifier)
+            with self.lock:
+                self.removal = result
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ValueError('No se pudo confirmar la retirada segura. No desconectes el dispositivo todavía') from exc
+        finally:
+            with self.lock:
+                self.removing = False
 
     def start(self, data):
         devices = self.devices()
@@ -79,8 +114,11 @@ class Engine:
                for key, group in [('source', 'sources'), ('destination', 'destinations')]):
             raise ValueError('Selección no válida')
         with self.lock:
-            if self.job['state'] == 'running':
+            if self.job['state'] in ('running', 'cancelling') or self.cleanup_failed:
                 raise ValueError('Ya hay un respaldo en curso')
+            if self.removing:
+                raise ValueError('Esperá a que se retire el dispositivo')
+            self.cancel_requested.clear()
             argv = None
             if self.config:
                 source = next(d for d in devices['sources'] if d['id'] == data['source'])
@@ -88,16 +126,19 @@ class Engine:
                 if source.get('disk') and source.get('disk') == target.get('disk'):
                     raise ValueError('Origen y destino pertenecen al mismo disco')
                 argv = command(self.config, source, target, self.checksum)
+                self.target_disk = target.get('disk')
                 if not (Path(self.config['engine_dir']) / 'backup.py').is_file():
                     raise ValueError('No se encontró backup.py en la instalación configurada')
             self.job = {'state': 'running', 'progress': 0 if not argv else None,
-                        'message': 'Simulación en curso' if not argv else 'Motor en ejecución · sin porcentaje disponible'}
+                        'message': 'Simulación en curso' if not argv else 'Preparando respaldo'}
         threading.Thread(target=self.run, args=(argv,), daemon=True).start()
 
     def run(self, argv):
         try:
             if argv is None:
                 for progress in range(10, 101, 10):
+                    if self.cancel_requested.is_set():
+                        break
                     time.sleep(.4)
                     with self.lock:
                         self.job['progress'] = progress
@@ -110,8 +151,49 @@ class Engine:
                 with (runtime / 'engine.log').open('w', encoding='utf-8') as log:
                     log.write('Ejecutando respaldo\n' + json.dumps(argv, ensure_ascii=False) + '\n')
                     log.flush()
-                    process = subprocess.Popen(argv, cwd=self.config['engine_dir'], stdout=log, stderr=log, shell=False)
-                    code = process.wait()
+                    if self.cancel_requested.is_set():
+                        raise InterruptedError('Cancelado antes de iniciar el motor')
+                    process = subprocess.Popen(argv, cwd=self.config['engine_dir'], stdout=log,
+                                               stderr=log, shell=False, start_new_session=True)
+                    tracker = BackupTelemetry(self.config['engine_dir'], self.target_disk, offset)
+                    stop = threading.Event()
+                    def monitor():
+                        while not stop.wait(2):
+                            try:
+                                update = tracker.sample()
+                                with self.lock:
+                                    if self.job['state'] == 'running':
+                                        self.job.update(update)
+                            except (OSError, ValueError):
+                                pass
+                    watcher = threading.Thread(target=monitor, daemon=True)
+                    watcher.start()
+                    cancel_stopped = False
+                    try:
+                        while True:
+                            if self.cancel_requested.is_set():
+                                try:
+                                    stop_group(process)
+                                    cancel_stopped = True
+                                except (OSError, ValueError):
+                                    self.cleanup_failed = True
+                                    raise
+                                code = process.wait()
+                                break
+                            try:
+                                code = process.wait(timeout=.5)
+                                break
+                            except subprocess.TimeoutExpired:
+                                continue
+                        if self.cancel_requested.is_set() and not cancel_stopped and not self.cleanup_failed:
+                            try:
+                                stop_group(process)
+                            except (OSError, ValueError):
+                                self.cleanup_failed = True
+                                raise
+                    finally:
+                        stop.set()
+                        watcher.join(timeout=3)
                     diagnostic = ''
                     try:
                         with upstream_log.open('rb') as upstream:
@@ -130,6 +212,12 @@ class Engine:
         except Exception:
             result = {'state': 'error', 'progress': None, 'message': 'No se pudo ejecutar el motor · revisar configuración'}
         with self.lock:
+            if self.cancel_requested.is_set():
+                result = {'state': 'cancelling' if self.cleanup_failed else 'cancelled', 'progress': None,
+                          'message': 'No se confirmó la detención. No retires los dispositivos.' if self.cleanup_failed else
+                          'Respaldo cancelado · pueden quedar archivos incompletos'}
+            if self.job.get('metrics'):
+                result['metrics'] = self.job['metrics']
             self.job = result
 
     def files(self, relative, page):
@@ -201,6 +289,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('Solicitud no válida')
             if self.path == '/api/backup':
                 self.server.engine.start(data)
+            elif self.path == '/api/cancel':
+                self.server.engine.cancel()
+            elif self.path == '/api/remove':
+                if not isinstance(data.get('device'), str):
+                    raise ValueError('Indicá el dispositivo que querés retirar')
+                self.server.engine.remove(data['device'])
             elif self.path == '/api/wifi':
                 if not self.server.engine.config:
                     raise ValueError('Wi-Fi no se modifica en modo demo')

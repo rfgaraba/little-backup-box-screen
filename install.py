@@ -13,7 +13,7 @@ APP = Path('/opt/little-backup-box-screen')
 ETC = Path('/etc/little-backup-box-screen')
 UNIT = Path('/etc/systemd/system/little-backup-box-screen.service')
 SERVICE = UNIT.name
-FILES = ('server.py', 'hardware.py', 'native.py', 'native_install.py', 'tools/display_probe.py', 'tools/display_console.py', 'web/index.html', 'web/app.js', 'web/style.css', 'LICENSE', 'README.md', 'config.example.json')
+FILES = ('server.py', 'hardware.py', 'telemetry.py', 'process_control.py', 'native.py', 'native_install.py', 'tools/display_probe.py', 'tools/display_console.py', 'web/index.html', 'web/app.js', 'web/style.css', 'LICENSE', 'README.md', 'config.example.json')
 
 
 def validate_config(config, check_paths=True):
@@ -160,7 +160,7 @@ def ensure_idle(port=8080, target_port=None):
             status = json.load(response)
     except Exception as exc:
         raise ValueError('El servicio está activo pero no responde. No se reiniciará sin conocer el estado del respaldo') from exc
-    if status.get('job', {}).get('state') not in ('idle', 'success', 'review', 'error'):
+    if status.get('job', {}).get('state') not in ('idle', 'success', 'review', 'error', 'cancelled') or status.get('removing'):
         raise ValueError('Hay un respaldo activo o un estado desconocido. Esperá antes de actualizar')
     if target_port != port:
         check_port_available(target_port)
@@ -176,6 +176,10 @@ def install(mode, config, display='web', framebuffer=None, port=8080):
         native_install.install_packages(['util-linux'])
         if not shutil.which('lsblk'):
             raise ValueError('util-linux se instaló pero no se encontró lsblk en PATH')
+    if mode == 'real' and not shutil.which('udisksctl'):
+        native_install.install_packages(['udisks2'])
+        if not shutil.which('udisksctl'):
+            raise ValueError('udisks2 se instaló pero no se encontró udisksctl en PATH')
     previous = read_json(ETC / 'install.json') if (ETC / 'install.json').exists() else {}
     active = ensure_idle(selected_port(None, previous), port)
     native_install.stop()
@@ -265,7 +269,7 @@ def main():
         if args.dry_run:
             print('Al instalar se comprobarán las dependencias y apt instalará las faltantes: '
                   + ', '.join((['python3-pyqt6'] if display == 'native' else [])
-                              + (['util-linux (lsblk)'] if mode == 'real' else [])))
+                              + (['util-linux (lsblk)', 'udisks2 (retirada segura)'] if mode == 'real' else [])))
             print('\nNo se modificó el sistema. Las rutas del motor se comprobarán al instalar.\n')
             print(service_text(mode, port))
             if display == 'native':

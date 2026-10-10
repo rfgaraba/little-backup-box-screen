@@ -139,6 +139,27 @@ class NativeUITests(unittest.TestCase):
             screen.deleteLater()
             self.app.processEvents()
 
+    def test_transfer_metrics_fit_with_fractional_percentage(self):
+        from native import Screen
+        screen = Screen()
+        screen.show()
+        try:
+            self.wait_for(lambda: screen.status is not None)
+            screen.timer.stop()
+            screen.status['job'] = {
+                'state': 'running', 'progress': 37.5, 'message': 'Procesando archivos',
+                'metrics': {'write_bps': 25400000, 'disk_written_bytes': 2340000000,
+                            'elapsed_seconds': 94, 'eta': '0:02:30',
+                            'files_processed': 375, 'files_total': 1000}}
+            screen.switch('Estado')
+            self.assert_layout(screen)
+            self.assertFalse(screen.grab().isNull())
+        finally:
+            screen.timer.stop()
+            screen.close()
+            screen.deleteLater()
+            self.app.processEvents()
+
 
 if __name__ == '__main__':
     unittest.main()

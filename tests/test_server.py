@@ -6,6 +6,42 @@ from server import Engine, command
 
 
 class GatewayTests(unittest.TestCase):
+    def test_cancel_is_a_request_until_worker_stops(self):
+        engine = Engine()
+        engine.job['state'] = 'running'
+        engine.cancel()
+        self.assertEqual(engine.status()['job']['state'], 'cancelling')
+        with patch('server.time.sleep'):
+            engine.run(None)
+        self.assertEqual(engine.status()['job']['state'], 'cancelled')
+        self.assertNotEqual(engine.status()['job']['state'], 'success')
+
+    def test_removal_blocked_during_copy_cancel_and_other_removal(self):
+        engine = Engine({'engine_dir': '/engine'})
+        for state in ('running', 'cancelling'):
+            engine.job['state'] = state
+            with patch('server.remove_device') as remove:
+                with self.assertRaises(ValueError):
+                    engine.remove('auto:card')
+                remove.assert_not_called()
+        engine.job['state'] = 'idle'
+        engine.removing = True
+        with self.assertRaises(ValueError):
+            engine.remove('auto:card')
+
+    def test_removal_success_and_failure_release_busy_flag(self):
+        engine = Engine({'engine_dir': '/engine'})
+        result = {'device': 'auto:card', 'message': 'Ya podés desconectarlo'}
+        with patch('server.remove_device', return_value=result):
+            engine.remove('auto:card')
+        self.assertEqual(engine.status()['removal'], result)
+        self.assertFalse(engine.removing)
+        with patch('server.remove_device', side_effect=ValueError('ocupado')):
+            with self.assertRaises(ValueError):
+                engine.remove('auto:card')
+        self.assertFalse(engine.removing)
+        self.assertEqual(engine.removal, {})
+
     def test_identified_card_uses_usb_instead_of_dynamic_anyusb(self):
         argv = command({'engine_dir': '/engine'},
                        {'id': 'card', 'engine': 'anyusb', 'preset': '--uuid a'},
@@ -25,7 +61,7 @@ class GatewayTests(unittest.TestCase):
             upstream = root / 'tmp/little-backup-box.log'
             upstream.write_text('Registro anterior\n')
             engine = Engine({'engine_dir': tmp})
-            def finish():
+            def finish(timeout=None):
                 with upstream.open('a') as log:
                     log.write('Invalid\nmode\ncombination\n')
                 return 0
@@ -85,6 +121,7 @@ class GatewayTests(unittest.TestCase):
             spawn.return_value.wait.return_value = 0
             engine.run(['fake-engine'])
             self.assertFalse(spawn.call_args.kwargs['shell'])
+            self.assertTrue(spawn.call_args.kwargs['start_new_session'])
         self.assertEqual(engine.status()['job']['state'], 'review')
 
     def test_files_pagination_and_traversal(self):

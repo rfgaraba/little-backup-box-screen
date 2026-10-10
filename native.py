@@ -177,7 +177,7 @@ class Screen(QWidget):
 
     def request(self, path, callback, data=None, failure=None):
         request = QNetworkRequest(QUrl(BASE + path))
-        request.setTransferTimeout(60000 if path == '/api/wifi' else 5000)
+        request.setTransferTimeout(90000 if path == '/api/remove' else 60000 if path == '/api/wifi' else 5000)
         if data is None:
             reply = self.network.get(request)
         else:
@@ -284,7 +284,7 @@ class Screen(QWidget):
         else:
             self.mode.setText('DEMO · no copia archivos' if self.status['demo'] else 'Little Backup Box')
             if self.tab == 'Estado' or (self.tab == 'Copiar' and
-                    (self.status['job']['state'] == 'running' or self.step == 3)):
+                    (self.status['job']['state'] in ('running', 'cancelling') or self.step == 3)):
                 self.job_view()
             elif self.tab == 'Copiar':
                 self.copy_view()
@@ -304,15 +304,70 @@ class Screen(QWidget):
     def job_view(self):
         job = self.status['job']
         self.label(job['message'])
-        if job['state'] == 'running':
+        if job['state'] in ('running', 'cancelling'):
             bar = QProgressBar()
             if job['progress'] is None:
                 bar.setRange(0, 0)
             else:
-                bar.setValue(job['progress'])
+                bar.setValue(round(job['progress']))
             self.content.addWidget(bar)
+            if job['progress'] is not None:
+                self.label('Progreso de etapa · por archivos')
         else:
             self.add('Nuevo respaldo', self.new_job)
+        metrics = job.get('metrics', {})
+        if metrics:
+            speed = metrics.get('write_bps')
+            written = metrics.get('disk_written_bytes')
+            self.label('Escritura: ' + (f'{speed / 1000000:.1f} MB/s' if speed is not None else 'sin datos')
+                       + (' · ' + f'{written / 1000000000:.2f} GB' if written is not None else ''))
+            elapsed = metrics.get('elapsed_seconds', 0)
+            self.label(f'Tiempo: {elapsed // 60}:{elapsed % 60:02d}'
+                       + (' · Restante: ' + metrics['eta'] if metrics.get('eta') else ''))
+            if 'files_total' in metrics:
+                self.label(f"Archivos: {metrics['files_processed']} / {metrics['files_total']}")
+        if job['state'] == 'running':
+            self.add('Cancelar respaldo', self.cancel_job)
+
+    def confirm(self, message, action_label, action):
+        dialog = QDialog(self)
+        dialog.setFixedSize(480, 320)
+        layout = QVBoxLayout(dialog)
+        label = QLabel(message)
+        label.setWordWrap(True)
+        layout.addWidget(label, 1)
+        layout.addWidget(self.button('Volver', dialog.reject))
+        layout.addWidget(self.button(action_label, dialog.accept))
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            action()
+
+    def cancel_job(self):
+        def stop():
+            def done(data):
+                self.status = data
+                self.render()
+            self.request('/api/cancel', done, {})
+        self.confirm('¿Cancelar el respaldo? Los archivos ya copiados se conservan; puede quedar un archivo incompleto. Esperá la confirmación antes de retirar los dispositivos.', 'Cancelar respaldo', stop)
+
+    def remove_device(self, device):
+        def remove():
+            self.pending = True
+            self.render()
+            def done(data):
+                self.pending = False
+                self.status = data
+                self.render()
+                self.refresh()
+            self.request('/api/remove', done, {'device': device['id']},
+                         failure=lambda: setattr(self, 'pending', False))
+        self.confirm('¿Retirar ' + device['label'] + '? Se desmontarán todas las particiones de ese disco. Esperá “Ya podés desconectarlo”.', 'Retirar dispositivo', remove)
+
+    def removable_devices(self):
+        found = {}
+        for device in self.devices['sources'] + self.devices['destinations']:
+            if device.get('disk') and device['id'].startswith('auto:'):
+                found.setdefault(device['disk'], device)
+        return list(found.values())
 
     def new_job(self):
         self.tab, self.step, self.page = 'Copiar', -1, 0
@@ -476,13 +531,32 @@ class Screen(QWidget):
                               ('Hotspot', self.hotspot_wifi, not self.wifi.get('forced'))])
             elif self.setting == 'Pantalla':
                 self.label('480 × 320 · pantalla SPI\nInterfaz nativa Qt · sin escritorio')
+            elif self.setting == 'Dispositivos':
+                devices = self.removable_devices()
+                pages = max(1, (len(devices) + 1) // 2)
+                self.page = min(self.page, pages - 1)
+                active = self.status['job']['state'] in ('running', 'cancelling')
+                self.label('Esperá a que termine el respaldo.' if active else
+                           'Retirando dispositivo…' if self.pending else
+                           self.status.get('removal', {}).get('message', 'Elegí el dispositivo que querés retirar.'))
+                for device in devices[self.page * 2:self.page * 2 + 2]:
+                    button = self.button(device['label'], lambda d=device: self.remove_device(d))
+                    button.setEnabled(not active and not self.pending and not self.status.get('removing') and not self.status['demo'])
+                    self.content.addWidget(button)
+                if not devices:
+                    self.label('No hay discos extraíbles conectados.')
+                self.row([('Volver', lambda: self.show_setting('Sistema'), True),
+                          ('Anterior', lambda: self.change_page(-1), self.page > 0),
+                          ('Siguiente', lambda: self.change_page(1), self.page < pages - 1)])
+                return
             else:
                 self.label('DEMO' if self.status['demo'] else 'Little Backup Box · motor CLI')
-                self.label('Ajustes de copia: solo esta sesión')
+                self.add('Retirar dispositivos', lambda: self.show_setting('Dispositivos'))
             self.add('Volver', lambda: self.show_setting(None))
 
     def show_setting(self, name):
         self.setting = name
+        self.page = 0
         if name == 'Info':
             self.refresh_info()
         if name == 'Wi-Fi':
