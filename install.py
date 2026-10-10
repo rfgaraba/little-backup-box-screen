@@ -49,7 +49,27 @@ def validate_config(config, check_paths=True):
             raise ValueError('El intérprete del motor no existe o no es ejecutable')
 
 
-def service_text(mode):
+def validate_port(port):
+    if type(port) is not int or not 1 <= port <= 65535:
+        raise ValueError('El puerto debe ser un entero entre 1 y 65535')
+    return port
+
+
+def selected_port(port, previous):
+    return validate_port(port if port is not None else previous.get('port', 8080))
+
+
+def check_port_available(port):
+    import socket
+    with socket.socket() as probe:
+        try:
+            probe.bind(('127.0.0.1', port))
+        except OSError as exc:
+            raise ValueError(f'El puerto {port} está ocupado o no está disponible; elegí otro con --port') from exc
+
+
+def service_text(mode, port=8080):
+    validate_port(port)
     extra = ' --config /etc/little-backup-box-screen/config.json' if mode == 'real' else ''
     identity = 'User=root\n' if mode == 'real' else 'DynamicUser=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\nNoNewPrivileges=yes\n'
     return f'''[Unit]
@@ -59,7 +79,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=/opt/little-backup-box-screen
-ExecStart=/usr/bin/python3 /opt/little-backup-box-screen/server.py{extra}
+ExecStart=/usr/bin/python3 /opt/little-backup-box-screen/server.py --port {port}{extra}
 Environment=PYTHONUNBUFFERED=1
 Environment=LBB_SCREEN_STATE_DIR=/var/lib/little-backup-box-screen
 StateDirectory=little-backup-box-screen
@@ -104,32 +124,31 @@ def plan(mode=None, config_path=None, replace=False, check_paths=True):
     return mode, config
 
 
-def ensure_idle():
+def ensure_idle(port=8080, target_port=None):
+    target_port = port if target_port is None else target_port
     active = subprocess.run(['systemctl', 'is-active', '--quiet', SERVICE], check=False).returncode == 0
+    if not active:
+        check_port_available(target_port)
+        return
     try:
-        with urlopen('http://127.0.0.1:8080/api/status', timeout=3) as response:
+        with urlopen(f'http://127.0.0.1:{port}/api/status', timeout=3) as response:
             status = json.load(response)
     except Exception as exc:
-        if active:
-            raise ValueError('El servicio está activo pero no responde. No se reiniciará sin conocer el estado del respaldo') from exc
-        # Check for another listener, even when our service is not active.
-        import socket
-        with socket.socket() as probe:
-            if probe.connect_ex(('127.0.0.1', 8080)) == 0:
-                raise ValueError('El puerto 8080 está ocupado por otro servidor')
-        return
-    if not active:
-        raise ValueError('Hay otra instancia en el puerto 8080. Cerrala antes de instalar')
+        raise ValueError('El servicio está activo pero no responde. No se reiniciará sin conocer el estado del respaldo') from exc
     if status.get('job', {}).get('state') not in ('idle', 'success', 'review', 'error'):
         raise ValueError('Hay un respaldo activo o un estado desconocido. Esperá antes de actualizar')
+    if target_port != port:
+        check_port_available(target_port)
     return True
 
 
-def install(mode, config, display='web', framebuffer=None):
+def install(mode, config, display='web', framebuffer=None, port=8080):
+    validate_port(port)
     import native_install
     if display == 'native':
         native_install.check_dependencies(framebuffer)
-    active = ensure_idle()
+    previous = read_json(ETC / 'install.json') if (ETC / 'install.json').exists() else {}
+    active = ensure_idle(selected_port(None, previous), port)
     native_install.stop()
     if active:
         subprocess.run(['systemctl', 'stop', SERVICE], check=True)
@@ -152,20 +171,20 @@ def install(mode, config, display='web', framebuffer=None):
             backup.chmod(0o600)
         target.write_text(json.dumps(config, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         target.chmod(0o600)
-    (ETC / 'install.json').write_text(json.dumps({'mode': mode, 'display': display, 'framebuffer': framebuffer}) + '\n', encoding='utf-8')
-    UNIT.write_text(service_text(mode), encoding='utf-8')
+    (ETC / 'install.json').write_text(json.dumps({'mode': mode, 'display': display, 'framebuffer': framebuffer, 'port': port}) + '\n', encoding='utf-8')
+    UNIT.write_text(service_text(mode, port), encoding='utf-8')
     UNIT.chmod(0o644)
     subprocess.run(['systemctl', 'daemon-reload'], check=True)
     subprocess.run(['systemctl', 'enable', '--now', SERVICE], check=True)
     import time
     for _ in range(20):
         try:
-            with urlopen('http://127.0.0.1:8080/api/status', timeout=1) as response:
+            with urlopen(f'http://127.0.0.1:{port}/api/status', timeout=1) as response:
                 status = json.load(response)
             if status['demo'] != (mode == 'demo'):
                 raise ValueError('El servicio arrancó con un modo inesperado')
             if display == 'native':
-                native_install.install(framebuffer)
+                native_install.install(framebuffer, port)
             else:
                 native_install.disable()
             return
@@ -182,12 +201,14 @@ def main():
     parser.add_argument('--dry-run', action='store_true', help='Mostrar plan sin escribir ni iniciar servicios')
     parser.add_argument('--display', choices=('web', 'native'), help='Interfaz nativa sin escritorio o navegador; conserva la opción instalada')
     parser.add_argument('--framebuffer', help='Dispositivo de pantalla SPI para Qt, por ejemplo /dev/fb1')
+    parser.add_argument('--port', type=int, help='Puerto HTTP local; conserva el instalado, por defecto 8080')
     args = parser.parse_args()
     if sys.version_info < (3, 10):
         parser.error('Se necesita Python 3.10 o posterior')
     try:
         mode, config = plan(args.mode, args.config, args.replace_config, check_paths=not args.dry_run)
         previous = read_json(ETC / 'install.json') if (ETC / 'install.json').exists() else {}
+        port = selected_port(args.port, previous)
         display = args.display or previous.get('display', 'native')
         framebuffer = args.framebuffer or previous.get('framebuffer')
         if display not in ('web', 'native'):
@@ -197,13 +218,13 @@ def main():
             validate_framebuffer(framebuffer, check_paths=False)
         elif args.framebuffer:
             raise ValueError('--framebuffer requiere --display native')
-        print(f'Modo: {mode}\nAplicación: {APP}\nConfiguración: {ETC}\nServicio: {SERVICE}\nURL local: http://127.0.0.1:8080')
+        print(f'Modo: {mode}\nAplicación: {APP}\nConfiguración: {ETC}\nServicio: {SERVICE}\nURL local: http://127.0.0.1:{port}')
         if args.dry_run:
             print('\nNo se modificó el sistema. Las rutas del motor se comprobarán al instalar.\n')
-            print(service_text(mode))
+            print(service_text(mode, port))
             if display == 'native':
                 from native_install import service_text as display_service
-                print(display_service(framebuffer))
+                print(display_service(framebuffer, port))
             return
         if sys.platform != 'linux' or not hasattr(os, 'geteuid') or os.geteuid() != 0:
             raise ValueError('Instalá en la Raspberry Pi con sudo python3 install.py')
@@ -212,8 +233,8 @@ def main():
         if not Path('/usr/bin/python3').is_file():
             raise ValueError('Se necesita Python en /usr/bin/python3')
         subprocess.run(['/usr/bin/python3', '-c', 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)'], check=True)
-        install(mode, config, display, framebuffer)
-        print('\nInstalación completa. ' + ('La interfaz nativa inicia en la pantalla SPI.' if display == 'native' else 'Abrí http://127.0.0.1:8080 en el navegador de la Raspberry Pi.'))
+        install(mode, config, display, framebuffer, port)
+        print('\nInstalación completa. ' + ('La interfaz nativa inicia en la pantalla SPI.' if display == 'native' else f'Abrí http://127.0.0.1:{port} en el navegador de la Raspberry Pi.'))
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.exit(1, f'Error: {exc}\n')
 

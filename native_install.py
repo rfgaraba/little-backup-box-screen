@@ -14,7 +14,9 @@ def validate_framebuffer(value, check_paths=True):
         raise ValueError(f'{value} no es un dispositivo framebuffer. Revisá el controlador de la pantalla')
 
 
-def service_text(framebuffer):
+def service_text(framebuffer, port=8080):
+    from install import validate_port
+    validate_port(port)
     validate_framebuffer(framebuffer, False)
     return f'''[Unit]
 Description=Little Backup Box - interfaz nativa SPI
@@ -24,7 +26,7 @@ Wants=little-backup-box-screen.service
 [Service]
 Type=simple
 WorkingDirectory=/opt/little-backup-box-screen
-ExecStart=/usr/bin/python3 /opt/little-backup-box-screen/native.py
+ExecStart=/usr/bin/python3 /opt/little-backup-box-screen/native.py --port {port}
 Environment=QT_QPA_PLATFORM=linuxfb:fb={framebuffer}
 Environment=QT_QPA_FB_HIDECURSOR=1
 Environment=PYTHONUNBUFFERED=1
@@ -61,8 +63,8 @@ def stop():
         subprocess.run(['systemctl', 'stop', SERVICE], check=True)
 
 
-def install(framebuffer):
-    UNIT.write_text(service_text(framebuffer), encoding='utf-8')
+def install(framebuffer, port=8080):
+    UNIT.write_text(service_text(framebuffer, port), encoding='utf-8')
     UNIT.chmod(0o644)
     subprocess.run(['systemctl', 'daemon-reload'], check=True)
     subprocess.run(['systemctl', 'enable', '--now', SERVICE], check=True)

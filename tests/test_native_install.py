@@ -5,6 +5,11 @@ import native_install
 
 
 class NativeInstallTests(unittest.TestCase):
+    def test_display_connects_to_selected_port(self):
+        self.assertIn('native.py --port 8081', native_install.service_text('/dev/fb1', 8081))
+        with self.assertRaises(ValueError):
+            native_install.service_text('/dev/fb1', 65536)
+
     def test_requires_explicit_device_and_rejects_environment_injection(self):
         for value in (None, '', '/dev/dri/card0', '/dev/fb1\nUser=root', '/tmp/fb0'):
             with self.assertRaises(ValueError):

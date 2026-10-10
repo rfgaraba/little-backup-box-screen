@@ -509,9 +509,14 @@ class Screen(QWidget):
 
 
 def main():
+    global BASE
     parser = argparse.ArgumentParser(description='Pantalla táctil nativa de Little Backup Box')
     parser.add_argument('--windowed', action='store_true', help='Previsualizar en un escritorio')
+    parser.add_argument('--port', type=int, default=8080, help='Puerto del servidor local')
     args = parser.parse_args()
+    if not 1 <= args.port <= 65535:
+        parser.error('El puerto debe estar entre 1 y 65535')
+    BASE = f'http://127.0.0.1:{args.port}'
     app = QApplication([sys.argv[0]])
     screen = Screen()
     if args.windowed:

@@ -122,7 +122,16 @@ Archivos instalados:
 - Servicio: `little-backup-box-screen.service`.
 - Pantalla nativa (por defecto): `little-backup-box-display.service`, con ajustes opcionales en `/etc/little-backup-box-screen/display.env`.
 
-Para actualizar, extraer un paquete nuevo y ejecutar otra vez `sudo bash install.sh`: conserva el modo y la configuración existentes. Si hay un respaldo activo, un puerto ocupado por otra instancia o un servicio activo cuyo estado no puede leerse, el instalador se detiene antes de cambiar los archivos. Evitar iniciar respaldos durante la actualización. Para cambiar una configuración existente se requiere `--config archivo.json --replace-config`; guarda la versión anterior en `config.previous.json`. Solo conserva la última copia anterior.
+Si el puerto 8080 está ocupado, elegir otro con `--port`; el servidor y la pantalla nativa usarán el mismo puerto:
+
+```sh
+python3 install.py --display native --framebuffer /dev/fb1 --port 8081 --dry-run
+sudo bash install.sh --display native --framebuffer /dev/fb1 --port 8081
+```
+
+En modo real, añadir `--mode real --config config.local.json`. Para ejecutar sin instalar, usar `python3 server.py --port 8081` y `native.py --port 8081` con los ajustes Qt correspondientes. La URL web será `http://127.0.0.1:8081`.
+
+Para actualizar desde el repositorio, ejecutar `git pull` y luego `sudo bash install.sh`; si se usa un paquete, extraer la versión nueva primero. El instalador conserva el modo, la configuración, la pantalla y el puerto existentes. Si hay un respaldo activo, un puerto ocupado por otra instancia o un servicio activo cuyo estado no puede leerse, el instalador se detiene antes de cambiar los archivos. Al cambiar de puerto, comprueba el respaldo en el puerto anterior y la disponibilidad del nuevo. Evitar iniciar respaldos durante la actualización. Para cambiar una configuración existente se requiere `--config archivo.json --replace-config`; guarda la versión anterior en `config.previous.json`. Solo conserva la última copia anterior.
 
 Administrar el servicio:
 
