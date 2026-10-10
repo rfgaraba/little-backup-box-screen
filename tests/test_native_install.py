@@ -1,10 +1,38 @@
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import native_install
 
 
 class NativeInstallTests(unittest.TestCase):
+    def test_touch_profile_matches_hardware_and_preserves_existing_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            frame = root / 'graphics/fb0'
+            frame.mkdir(parents=True)
+            (frame / 'name').write_text('fb_ili9486\n')
+            (frame / 'virtual_size').write_text('480,320\n')
+            inputs = root / 'inputs'
+            inputs.write_text('N: Name="ADS7846 Touchscreen"\n')
+            env = root / 'etc/display.env'
+            with patch.object(native_install, 'GRAPHICS', root / 'graphics'), patch.object(native_install, 'INPUT_DEVICES', inputs), patch.object(native_install, 'DISPLAY_ENV', env):
+                native_install.configure_touch('/dev/fb0')
+                self.assertIn(native_install.ADS7846_MATRIX, env.read_text())
+                self.assertNotIn('NO_LIBINPUT=', env.read_text())
+                env.write_text('CUSTOM=preserved\n')
+                native_install.configure_touch('/dev/fb0')
+                self.assertEqual(env.read_text(), 'CUSTOM=preserved\n')
+                env.unlink()
+                (frame / 'virtual_size').write_text('320,480\n')
+                native_install.configure_touch('/dev/fb0')
+                self.assertFalse(env.exists())
+                (frame / 'virtual_size').write_text('480,320\n')
+                inputs.write_text('N: Name="Other Touchscreen"\n')
+                native_install.configure_touch('/dev/fb0')
+                self.assertFalse(env.exists())
+
     def test_installs_missing_qt_and_checks_again(self):
         with patch('native_install.validate_framebuffer'), patch('native_install.qt_available', side_effect=[False, True]) as probe, patch('native_install.install_packages') as apt:
             native_install.check_dependencies('/dev/fb1', install_missing=True)

@@ -65,7 +65,11 @@ journalctl -u little-backup-box-display -n 50
 sudo systemctl restart little-backup-box-display
 ```
 
-Para ajustar el táctil, se puede crear `/etc/little-backup-box-screen/display.env`; el instalador lo conserva. Por ejemplo, **solo si Qt usa libinput**, una matriz de identidad (no corrige ninguna rotación):
+Para ajustar el táctil, se puede crear `/etc/little-backup-box-screen/display.env`; el instalador lo conserva.
+
+En instalaciones sin `display.env`, el instalador reconoce el framebuffer `fb_ili9486` de 480 × 320 junto al `ADS7846 Touchscreen` y crea el perfil libinput de orientación y calibración comprobado en nuestra Raspberry Pi. Conserva cualquier archivo existente sin modificarlo. El perfil corresponde a esta orientación horizontal; otros paneles o montajes pueden requerir su propia calibración. Para este hardware, el backend evdev de Qt 6.8.2 de Debian leyó límites 0–0 y generó coordenadas inválidas, por lo que el perfil utiliza libinput.
+
+Por ejemplo, **solo si Qt usa libinput**, una matriz de identidad (no corrige ninguna rotación; no reemplazar con ella el perfil calibrado):
 
 ```ini
 QT_QPA_LIBINPUT_TOUCH_MATRIX="1 0 0 0 1 0"
