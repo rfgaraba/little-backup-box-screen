@@ -3,6 +3,26 @@ const nav = document.querySelector('nav');
 let tab = 'Copiar', step = -1, source = null, destination = null, page = 0;
 let wifi = {};
 let wifiTicks = 0;
+let info = {};
+function updateWifiIndicator() {
+  const indicator = document.querySelector('#wifi-indicator');
+  const state = info.wifi?.state || 'unavailable';
+  const label = {connected: 'Wi-Fi conectado', connecting: 'Wi-Fi conectando', disconnected: 'Wi-Fi desconectado'}[state] || 'Wi-Fi no disponible';
+  const level = info.wifi?.signal == null ? 3 : Math.max(1, Math.min(3, Math.ceil(info.wifi.signal / 33)));
+  indicator.replaceChildren();
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 26 22');
+  ['M4 8 Q13 0 22 8', 'M7 12 Q13 6 19 12', 'M10 16 Q13 13 16 16', 'M13 19 L13 19.2'].forEach((d, i) => {
+    const path = document.createElementNS(svg.namespaceURI, 'path');
+    path.setAttribute('d', d); path.setAttribute('stroke', state === 'connected' && (3 - i <= level) ? '#79dcc6' : '#53718d'); svg.append(path);
+  });
+  if (state !== 'connected') {
+    const path = document.createElementNS(svg.namespaceURI, 'path');
+    path.setAttribute('d', state === 'connecting' ? 'M23 12 L23 16 M23 19 L23 19.2' : 'M3 2 L23 20');
+    path.setAttribute('stroke', '#edf4fa'); svg.append(path);
+  }
+  indicator.append(svg); indicator.setAttribute('aria-label', label); indicator.title = label;
+}
 let detail = null, setting = null, path = '', files = { entries: [], page: 0, pages: 1 };
 let status = { demo: true, checksum: true, job: { state: 'idle', progress: null, message: 'Conectando…' } };
 let devices = { sources: [], destinations: [] }, error = '', busy = false;
@@ -53,7 +73,8 @@ function jobView() {
   content.append(button(running ? 'Ver progreso' : 'Nuevo respaldo', () => { tab = 'Copiar'; if (!running) { step = -1; page = 0; source = destination = null; } }, 'primary'));
 }
 function render() {
-  document.querySelector('#mode').textContent = status.demo ? 'DEMO' : 'MOTOR REAL';
+  document.querySelector('#mode').textContent = status.demo ? 'DEMO' : '';
+  updateWifiIndicator();
   nav.replaceChildren(...['Estado', 'Copiar', 'Archivos', 'Ajustes'].map(name => {
     const b = button(name, async () => { tab = name; detail = setting = null; page = 0; if (name === 'Archivos') await loadFiles(); });
     if (name === tab) b.setAttribute('aria-current', 'page'); return b;
@@ -107,9 +128,12 @@ function render() {
     content.append(text('h1', setting || 'Ajustes'));
     if (!setting) {
       const list = document.createElement('div'); list.className = 'list';
-      ['Copia', 'Wi-Fi', 'Sistema'].forEach(s => list.append(button(s + ' ›', async () => { setting = s; if (s === 'Wi-Fi') wifi = await api('/api/wifi'); }))); content.append(list);
+      list.classList.add('settings-list');
+      ['Info', 'Copia', 'Wi-Fi', 'Sistema'].forEach(s => list.append(button(s + ' ›', async () => { setting = s; if (s === 'Wi-Fi') wifi = await api('/api/wifi'); if (s === 'Info') info = await api('/api/info'); }))); content.append(list);
     } else {
-      if (setting === 'Copia') {
+      if (setting === 'Info') {
+        content.append(card(`Dispositivo: ${info.hostname || 'Consultando…'}`, `IP: ${info.ip || 'Sin dirección IP'}`, `MAC: ${info.mac || 'No disponible'}`, `Interfaz: ${info.interface || 'Sin conexión'}`));
+      } else if (setting === 'Copia') {
         content.append(card('Verificación por checksum', 'Se aplica al próximo respaldo.'));
         content.append(button(status.checksum ? 'Checksum: activado' : 'Checksum: desactivado', async () => { status = await api('/api/settings', { checksum: !status.checksum }); }));
       } else if (setting === 'Wi-Fi') {
@@ -138,7 +162,12 @@ function render() {
 }
 async function refresh() {
   try {
-    if (setting === 'Wi-Fi' && ++wifiTicks % 5 === 0) {
+    if (++wifiTicks % 5 === 0) {
+      info = await api('/api/info');
+      updateWifiIndicator();
+      if (setting === 'Info') render();
+    }
+    if (setting === 'Wi-Fi' && wifiTicks % 5 === 0) {
       const current = await api('/api/wifi');
       if (JSON.stringify(current) !== JSON.stringify(wifi)) { wifi = current; render(); }
     }
@@ -151,4 +180,4 @@ async function refresh() {
     }
   } catch { error = 'Sin conexión con el servidor'; render(); }
 }
-(async () => { try { [status, devices] = await Promise.all([api('/api/status'), api('/api/devices')]); } catch { error = 'Sin conexión con el servidor'; } render(); setInterval(refresh, 1000); })();
+(async () => { try { [status, devices, info] = await Promise.all([api('/api/status'), api('/api/devices'), api('/api/info')]); } catch { error = 'Sin conexión con el servidor'; } render(); setInterval(refresh, 1000); })();

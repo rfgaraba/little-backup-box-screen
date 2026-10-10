@@ -13,7 +13,7 @@ APP = Path('/opt/little-backup-box-screen')
 ETC = Path('/etc/little-backup-box-screen')
 UNIT = Path('/etc/systemd/system/little-backup-box-screen.service')
 SERVICE = UNIT.name
-FILES = ('server.py', 'hardware.py', 'native.py', 'native_install.py', 'tools/display_probe.py', 'web/index.html', 'web/app.js', 'web/style.css', 'LICENSE', 'README.md', 'config.example.json')
+FILES = ('server.py', 'hardware.py', 'native.py', 'native_install.py', 'tools/display_probe.py', 'tools/display_console.py', 'web/index.html', 'web/app.js', 'web/style.css', 'LICENSE', 'README.md', 'config.example.json')
 
 
 def validate_config(config, check_paths=True):

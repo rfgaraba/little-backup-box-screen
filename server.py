@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import threading
 import time
-from hardware import discover, Wifi
+from hardware import discover, Wifi, network_info
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
 
@@ -148,6 +148,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if url.path == '/api/status':
                 return self.reply(self.server.engine.status())
+            if url.path == '/api/info':
+                return self.reply(network_info())
             if url.path == '/api/devices':
                 return self.reply(self.server.engine.devices())
             if url.path == '/api/wifi':

@@ -3,6 +3,49 @@ import json
 import subprocess
 import secrets
 import threading
+import socket
+from pathlib import Path
+
+
+def network_info():
+    """Read local network state without requiring Comitup or changing connections."""
+    result = {'hostname': socket.gethostname(), 'interface': '', 'ip': '', 'mac': '',
+              'wifi': {'state': 'unavailable', 'signal': None}}
+    try:
+        addresses = json.loads(subprocess.run(['ip', '-j', 'address'], capture_output=True,
+                                             text=True, check=True, timeout=3).stdout)
+        interfaces = [n for n in addresses if n['ifname'] != 'lo']
+        for n in interfaces:
+            n['ips'] = [a['local'] for a in n.get('addr_info', [])
+                        if a.get('scope') == 'global' and a.get('family') == 'inet']
+        wireless = [n for n in interfaces if (Path('/sys/class/net') / n['ifname'] / 'wireless').exists()]
+        if wireless:
+            wifi = next((n for n in wireless if n.get('operstate') == 'UP'), wireless[0])
+            state = 'connected' if wifi.get('operstate') == 'UP' and wifi['ips'] else 'connecting' if wifi.get('operstate') == 'UP' else 'disconnected'
+            result['wifi']['state'] = state
+            try:
+                for line in Path('/proc/net/wireless').read_text().splitlines():
+                    if line.strip().startswith(wifi['ifname'] + ':'):
+                        quality = float(line.split(':', 1)[1].split()[1].rstrip('.'))
+                        result['wifi']['signal'] = max(0, min(100, round(quality * 100 / 70)))
+            except (OSError, ValueError, IndexError):
+                pass
+        default = ''
+        try:
+            routes = json.loads(subprocess.run(['ip', '-j', 'route', 'show', 'default'],
+                                               capture_output=True, text=True, check=True, timeout=3).stdout)
+            if routes:
+                default = min(routes, key=lambda r: r.get('metric', 0)).get('dev', '')
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+        chosen = next((n for n in interfaces if n['ifname'] == default and n['ips']), None)
+        chosen = chosen or next((n for n in interfaces if n['ips']), None)
+        chosen = chosen or next(iter(wireless or interfaces), None)
+        if chosen:
+            result.update(interface=chosen['ifname'], ip=', '.join(chosen['ips']), mac=chosen.get('address', ''))
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        pass
+    return result
 
 
 def discover():

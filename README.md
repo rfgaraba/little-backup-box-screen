@@ -190,6 +190,10 @@ La microSD del sistema no es un origen de fotos. Para respaldar otra tarjeta se 
 
 ## Wi-Fi desde la pantalla
 
+La barra superior muestra un icono Wi-Fi con intensidad de señal, estado de conexión y marca de desconexión. Se actualiza cada cinco segundos y funciona aunque Comitup no esté instalado; indica la conexión local, no comprueba acceso a Internet. Ajustes → Info es la primera opción y muestra el nombre del dispositivo, la IP y la MAC de la interfaz de red principal.
+
+Al iniciar la pantalla nativa se oculta el cursor de la consola Linux y se desactiva su parpadeo, además de ocultar el puntero de Qt. El ajuste se aplica al iniciar el servicio y no requiere modificar el arranque del sistema.
+
 **Ajustes → Wi-Fi** muestra estado, red conectada y nombre del hotspot. Permite elegir una red visible o escribir un SSID oculto e ingresar la contraseña mediante un teclado táctil, con mayúsculas, números y símbolos. Comitup guarda las redes para futuras conexiones.
 
 Seleccionar Comitup al instalar el motor Little Backup Box e instalar `python3-dbus` para el intérprete del servicio (`sudo apt install python3-dbus`). Esta interfaz detecta si Comitup no está disponible y lo informa; el modo demo no cambia la red.

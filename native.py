@@ -5,7 +5,7 @@ import sys
 from urllib.parse import urlencode
 
 from PyQt6.QtCore import QByteArray, Qt, QTimer, QUrl
-from PyQt6.QtGui import QFontMetrics
+from PyQt6.QtGui import QFontMetrics, QPainter, QPen, QColor
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PyQt6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QProgressBar, QPushButton,
@@ -13,6 +13,40 @@ from PyQt6.QtWidgets import (
 )
 
 BASE = 'http://127.0.0.1:8080'
+
+
+class WifiIndicator(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setFixedSize(26, 20)
+        self.state, self.signal = 'unavailable', None
+
+    def set_state(self, wifi):
+        self.state, self.signal = wifi.get('state', 'unavailable'), wifi.get('signal')
+        self.setAccessibleName({'connected': 'Wi-Fi conectado', 'connecting': 'Wi-Fi conectando',
+                                'disconnected': 'Wi-Fi desconectado'}.get(self.state, 'Wi-Fi no disponible'))
+        self.setToolTip(self.accessibleName())
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        connected = self.state == 'connected'
+        level = 3 if self.signal is None else max(1, min(3, (self.signal + 32) // 33))
+        for i, radius in enumerate((6, 10, 14), 1):
+            color = '#79dcc6' if connected and i <= level else '#53718d'
+            painter.setPen(QPen(QColor(color), 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            painter.drawArc(13 - radius, 19 - radius, radius * 2, radius * 2, 45 * 16, 90 * 16)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor('#79dcc6' if connected else '#53718d'))
+        painter.drawEllipse(11, 16, 4, 4)
+        if not connected:
+            painter.setPen(QPen(QColor('#edf4fa'), 2))
+            if self.state == 'connecting':
+                painter.drawLine(22, 12, 22, 16)
+                painter.drawPoint(22, 19)
+            else:
+                painter.drawLine(3, 2, 23, 19)
 
 
 class TouchKeyboard(QDialog):
@@ -89,6 +123,8 @@ class Screen(QWidget):
         self.devices = {'sources': [], 'destinations': []}
         self.tab, self.step, self.page = 'Copiar', -1, 0
         self.wifi = {}
+        self.info = {}
+        self.info_pending = False
         self.wifi_ticks = 0
         self.source = self.destination = self.detail = self.setting = None
         self.path, self.error = '', ''
@@ -102,7 +138,11 @@ class Screen(QWidget):
         layout.setSpacing(4)
         self.mode = QLabel('CONECTANDO')
         self.mode.setFixedHeight(20)
-        layout.addWidget(self.mode)
+        header = QHBoxLayout()
+        header.addWidget(self.mode, 1)
+        self.wifi_indicator = WifiIndicator()
+        header.addWidget(self.wifi_indicator)
+        layout.addLayout(header)
         self.body = QWidget()
         self.content = QVBoxLayout(self.body)
         self.content.setContentsMargins(0, 0, 0, 0)
@@ -167,6 +207,8 @@ class Screen(QWidget):
             return
         self.polling = True
         self.wifi_ticks += 1
+        if self.wifi_ticks == 1 or self.wifi_ticks % 5 == 0:
+            self.refresh_info()
         if self.setting == 'Wi-Fi' and self.wifi_ticks % 5 == 0:
             def wifi_done(data):
                 if data != self.wifi:
@@ -227,6 +269,7 @@ class Screen(QWidget):
         while layout.count():
             item = layout.takeAt(0)
             if item.widget():
+                item.widget().hide()
                 item.widget().deleteLater()
             elif item.layout():
                 self.clear(item.layout())
@@ -239,7 +282,7 @@ class Screen(QWidget):
         elif self.status is None:
             self.label('Conectando con el servicio de respaldo…')
         else:
-            self.mode.setText('DEMO · no copia archivos' if self.status['demo'] else 'MOTOR REAL')
+            self.mode.setText('DEMO · no copia archivos' if self.status['demo'] else 'Little Backup Box')
             if self.tab == 'Estado' or (self.tab == 'Copiar' and
                     (self.status['job']['state'] == 'running' or self.step == 3)):
                 self.job_view()
@@ -407,10 +450,17 @@ class Screen(QWidget):
     def settings_view(self):
         self.label(self.setting or 'Ajustes')
         if not self.setting:
-            for name in ('Copia', 'Wi-Fi', 'Sistema'):
-                self.add(name, lambda n=name: self.show_setting(n))
+            self.row([('Info', lambda: self.show_setting('Info'), True),
+                      ('Copia', lambda: self.show_setting('Copia'), True)])
+            self.row([('Wi-Fi', lambda: self.show_setting('Wi-Fi'), True),
+                      ('Sistema', lambda: self.show_setting('Sistema'), True)])
         else:
-            if self.setting == 'Copia':
+            if self.setting == 'Info':
+                self.label('Dispositivo: ' + self.info.get('hostname', 'Consultando…'))
+                self.label('IP: ' + (self.info.get('ip') or 'Sin dirección IP'))
+                self.label('MAC: ' + (self.info.get('mac') or 'No disponible'))
+                self.label('Interfaz: ' + (self.info.get('interface') or 'Sin conexión'))
+            elif self.setting == 'Copia':
                 self.label('Checksum · se aplica al próximo respaldo')
                 self.add('Activado' if self.status['checksum'] else 'Desactivado', self.toggle_checksum)
             elif self.setting == 'Wi-Fi':
@@ -433,12 +483,29 @@ class Screen(QWidget):
 
     def show_setting(self, name):
         self.setting = name
+        if name == 'Info':
+            self.refresh_info()
         if name == 'Wi-Fi':
             def done(data):
                 self.wifi = data
                 self.render()
             self.request('/api/wifi', done)
         self.render()
+
+    def refresh_info(self):
+        if self.info_pending:
+            return
+        self.info_pending = True
+        def done(data):
+            self.info_pending = False
+            self.info = data
+            self.wifi_indicator.set_state(data.get('wifi', {}))
+            if self.setting == 'Info':
+                self.render()
+        def failed():
+            self.info_pending = False
+            self.wifi_indicator.set_state({})
+        self.request('/api/info', done, failure=failed)
 
     def connect_wifi(self):
         networks = [n['ssid'] for n in self.wifi.get('networks', [])]

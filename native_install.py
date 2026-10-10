@@ -59,6 +59,7 @@ Wants=little-backup-box-screen.service
 [Service]
 Type=simple
 WorkingDirectory=/opt/little-backup-box-screen
+ExecStartPre=+/usr/bin/python3 /opt/little-backup-box-screen/tools/display_console.py
 ExecStart=/usr/bin/python3 /opt/little-backup-box-screen/native.py --port {port}
 Environment=QT_QPA_PLATFORM=linuxfb:fb={framebuffer}
 Environment=QT_QPA_FB_HIDECURSOR=1

@@ -3,7 +3,7 @@ import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
-from hardware import discover, Wifi
+from hardware import discover, Wifi, network_info
 from server import Engine
 
 
@@ -13,6 +13,25 @@ def disk(name, transport, uuid, mount=None, model=''):
 
 
 class HardwareTests(unittest.TestCase):
+    def test_network_info_reports_real_wifi_and_default_interface(self):
+        interfaces = [{'ifname': 'lo', 'addr_info': []},
+                      {'ifname': 'wlan0', 'operstate': 'UP', 'address': 'aa:bb:cc:dd:ee:ff',
+                       'addr_info': [{'family': 'inet', 'scope': 'global', 'local': '192.168.68.78'}]}]
+        responses = [Mock(stdout=json.dumps(interfaces)), Mock(stdout='[{"dev":"wlan0","metric":600}]')]
+        with patch('hardware.subprocess.run', side_effect=responses), patch('hardware.socket.gethostname', return_value='lbb'), patch('hardware.Path.exists', return_value=True), patch('hardware.Path.read_text', return_value='wlan0: 0000 70. -23. -256\n'):
+            info = network_info()
+        self.assertEqual(info['hostname'], 'lbb')
+        self.assertEqual(info['ip'], '192.168.68.78')
+        self.assertEqual(info['mac'], 'aa:bb:cc:dd:ee:ff')
+        self.assertEqual(info['wifi'], {'state': 'connected', 'signal': 100})
+
+    def test_network_info_without_network_tools_is_still_readable(self):
+        with patch('hardware.subprocess.run', side_effect=FileNotFoundError), patch('hardware.socket.gethostname', return_value='lbb'):
+            info = network_info()
+        self.assertEqual(info['hostname'], 'lbb')
+        self.assertEqual(info['wifi']['state'], 'unavailable')
+        self.assertEqual(info['ip'], '')
+
     def scan(self, disks):
         with patch('hardware.subprocess.run', return_value=Mock(stdout=json.dumps({'blockdevices': disks}))):
             return discover()

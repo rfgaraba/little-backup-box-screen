@@ -114,6 +114,31 @@ class NativeUITests(unittest.TestCase):
             keyboard.deleteLater()
             screen.deleteLater()
 
+    def test_info_settings_and_wifi_indicator_fit_the_screen(self):
+        from native import Screen
+        from PyQt6.QtWidgets import QPushButton
+        screen = Screen()
+        screen.show()
+        try:
+            self.wait_for(lambda: screen.status is not None and bool(screen.info))
+            screen.status['demo'] = False
+            screen.switch('Ajustes')
+            self.assertNotIn('MOTOR REAL', screen.mode.text())
+            self.assert_layout(screen)
+            self.assertEqual([screen.content.itemAt(i).layout().itemAt(j).widget().full_text
+                              for i in (1, 2) for j in (0, 1)], ['Info', 'Copia', 'Wi-Fi', 'Sistema'])
+            screen.show_setting('Info')
+            self.assert_layout(screen)
+            for state in ('connected', 'connecting', 'disconnected', 'unavailable'):
+                screen.wifi_indicator.set_state({'state': state, 'signal': 100})
+                self.assertIn('Wi-Fi', screen.wifi_indicator.accessibleName())
+                self.assertFalse(screen.wifi_indicator.grab().isNull())
+        finally:
+            screen.timer.stop()
+            screen.close()
+            screen.deleteLater()
+            self.app.processEvents()
+
 
 if __name__ == '__main__':
     unittest.main()
