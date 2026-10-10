@@ -6,6 +6,37 @@ from server import Engine, command
 
 
 class GatewayTests(unittest.TestCase):
+    def test_identified_card_uses_usb_instead_of_dynamic_anyusb(self):
+        argv = command({'engine_dir': '/engine'},
+                       {'id': 'card', 'engine': 'anyusb', 'preset': '--uuid a'},
+                       {'id': 'ssd', 'engine': 'usb', 'preset': '--uuid b'}, True)
+        self.assertEqual(argv[argv.index('--SourceName') + 1], 'usb')
+        self.assertEqual(argv[argv.index('--TargetName') + 1], 'usb')
+        self.assertIn('--uuid a', argv)
+        with self.assertRaises(ValueError):
+            command({'engine_dir': '/engine'},
+                    {'id': 'card', 'engine': 'anyusb', 'preset': '--uuid a'},
+                    {'id': 'ssd', 'engine': 'usb'}, True)
+
+    def test_engine_internal_error_is_reported_even_with_zero_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'tmp').mkdir()
+            upstream = root / 'tmp/little-backup-box.log'
+            upstream.write_text('Registro anterior\n')
+            engine = Engine({'engine_dir': tmp})
+            def finish():
+                with upstream.open('a') as log:
+                    log.write('Invalid\nmode\ncombination\n')
+                return 0
+            with patch.dict('os.environ', {'LBB_SCREEN_STATE_DIR': str(root)}), patch('server.subprocess.Popen') as spawn:
+                spawn.return_value.wait.side_effect = finish
+                engine.run(['fake-engine'])
+            self.assertEqual(engine.status()['job']['state'], 'error')
+            self.assertIn('No se copió', engine.status()['job']['message'])
+            captured = (root / 'engine.log').read_text()
+            self.assertIn('Invalid', captured)
+            self.assertNotIn('Registro anterior', captured)
     def test_real_devices_are_discovered_without_configured_uuids(self):
         source = {'id': 'auto:a', 'engine': 'anyusb', 'preset': '--uuid a', 'disk': '/dev/sda', 'sd': True}
         target = {'id': 'auto:b', 'engine': 'usb', 'preset': '--uuid b', 'disk': '/dev/sdb', 'sd': False}

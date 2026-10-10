@@ -20,10 +20,11 @@ def command(config, source, target, checksum):
         raise ValueError('Tipo de almacenamiento no admitido')
     if source['id'] == target['id'] or (source.get('preset') and source.get('preset') == target.get('preset')):
         raise ValueError('Origen y destino deben ser distintos')
-    if source['engine'] == target['engine'] and not (source.get('preset') and target.get('preset')):
+    source_engine = 'usb' if source['engine'] == 'anyusb' and source.get('preset') else source['engine']
+    if source_engine == target['engine'] and not (source.get('preset') and target.get('preset')):
         raise ValueError('Se requieren identificadores para distinguir los dispositivos')
     return [config.get('python', 'python3'), str(Path(config['engine_dir']) / 'backup.py'),
-            '--SourceName', source['engine'], '--TargetName', target['engine'],
+            '--SourceName', source_engine, '--TargetName', target['engine'],
             '--device-identifier-preset-source', source.get('preset', ''),
             '--device-identifier-preset-target', target.get('preset', ''),
             '--move-files', 'False', '--move-files2', 'False', '--rename-files', 'False',
@@ -104,12 +105,28 @@ class Engine:
             else:
                 runtime = Path(os.environ.get('LBB_SCREEN_STATE_DIR', ROOT / '.runtime'))
                 runtime.mkdir(exist_ok=True)
+                upstream_log = Path(self.config['engine_dir']) / 'tmp/little-backup-box.log'
+                offset = upstream_log.stat().st_size if upstream_log.exists() else 0
                 with (runtime / 'engine.log').open('w', encoding='utf-8') as log:
+                    log.write('Ejecutando respaldo\n' + json.dumps(argv, ensure_ascii=False) + '\n')
+                    log.flush()
                     process = subprocess.Popen(argv, cwd=self.config['engine_dir'], stdout=log, stderr=log, shell=False)
                     code = process.wait()
+                    diagnostic = ''
+                    try:
+                        with upstream_log.open('rb') as upstream:
+                            size = upstream.seek(0, 2)
+                            upstream.seek(max(offset if size >= offset else 0, size - 65536))
+                            diagnostic = upstream.read().decode('utf-8', errors='replace')
+                        log.write('\nRegistro interno del motor:\n' + diagnostic)
+                    except OSError:
+                        pass
                 # Upstream can exit 0 despite backup errors; never equate this with verified success.
                 result = {'state': 'review' if code == 0 else 'error', 'progress': None,
                           'message': 'Motor finalizado · revisar registro del respaldo' if code == 0 else f'El motor terminó con error ({code})'}
+                if 'invalid mode combination' in ' '.join(diagnostic.lower().split()):
+                    result = {'state': 'error', 'progress': None,
+                              'message': 'No se copió: el motor rechazó la combinación de origen y destino.'}
         except Exception:
             result = {'state': 'error', 'progress': None, 'message': 'No se pudo ejecutar el motor · revisar configuración'}
         with self.lock:
