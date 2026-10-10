@@ -25,9 +25,9 @@ def validate_config(config, check_paths=True):
     identifiers = set()
     for group, allowed in [('sources', {'camera', 'anyusb', 'usb', 'internal', 'nvme'}),
                            ('destinations', {'usb', 'internal', 'nvme'})]:
-        devices = config.get(group)
-        if not isinstance(devices, list) or not devices:
-            raise ValueError(f'{group} debe contener al menos un dispositivo')
+        devices = config.get(group, [])
+        if not isinstance(devices, list):
+            raise ValueError(f'{group} debe ser una lista; puede estar vacía para detección automática')
         for device in devices:
             if not isinstance(device, dict) or device.get('engine') not in allowed:
                 raise ValueError(f'Tipo de dispositivo inválido en {group}')
@@ -99,13 +99,36 @@ def read_json(path):
     return json.loads(path.read_text(encoding='utf-8-sig'))
 
 
-def plan(mode=None, config_path=None, replace=False, check_paths=True):
+def automatic_config(engine_dir=None):
+    if engine_dir is not None:
+        candidates = [Path(engine_dir)]
+    else:
+        candidates = [Path('/var/www/html/little-backup-box'), Path('/opt/little-backup-box')]
+        candidates += list(Path('/home').glob('*/little-backup-box'))
+        candidates += [Path('/root/little-backup-box'), SOURCE.parent / 'little-backup-box']
+    found = sorted({p.resolve() for p in candidates if (p / 'backup.py').is_file()})
+    if len(found) != 1:
+        raise ValueError('No se encontró un único motor Little Backup Box. Instalalo primero o indicá --engine-dir /ruta/que/contiene/backup.py. Para probar la pantalla sin motor, usá --mode demo')
+    return {'engine_dir': str(found[0]), 'python': '/usr/bin/python3',
+            'files_root': '/media', 'sources': [], 'destinations': []}
+
+
+def automatic_framebuffer():
+    devices = sorted(str(p) for p in Path('/dev').glob('fb[0-9]*') if p.is_char_device())
+    if len(devices) == 1:
+        return devices[0]
+    raise ValueError('No se pudo identificar una única pantalla framebuffer. Indicá --framebuffer /dev/fbN; comprobá el controlador si no hay ninguna')
+
+
+def plan(mode=None, config_path=None, replace=False, check_paths=True, engine_dir=None):
     previous = read_json(ETC / 'install.json') if (ETC / 'install.json').exists() else {}
-    mode = mode or ('real' if config_path else previous.get('mode', 'demo'))
+    mode = mode or ('real' if config_path or engine_dir else previous.get('mode', 'real'))
     if mode not in ('demo', 'real'):
         raise ValueError('Modo inválido en los datos de instalación')
-    if mode == 'demo' and config_path:
-        raise ValueError('--config solo se usa en modo real')
+    if mode == 'demo' and (config_path or engine_dir):
+        raise ValueError('--config y --engine-dir solo se usan en modo real')
+    if config_path and engine_dir:
+        raise ValueError('Usá --config o --engine-dir, no ambos')
     current = ETC / 'config.json'
     config = None
     if mode == 'real':
@@ -113,10 +136,12 @@ def plan(mode=None, config_path=None, replace=False, check_paths=True):
             config = read_json(config_path)
             if current.exists() and config != read_json(current) and not replace:
                 raise ValueError('Ya hay una configuración distinta. Para reemplazarla usá --replace-config')
-        elif current.exists():
+        elif current.exists() and not engine_dir:
             config = read_json(current)
         else:
-            raise ValueError('Modo real: indicá --config config.local.json')
+            config = automatic_config(engine_dir)
+            if current.exists() and config != read_json(current) and not replace:
+                raise ValueError('Ya hay una configuración distinta. Para reemplazarla usá --replace-config')
         validate_config(config, check_paths)
     for name in FILES:
         if not (SOURCE / name).is_file():
@@ -197,6 +222,7 @@ def main():
     parser = argparse.ArgumentParser(description='Instalador para Raspberry Pi OS/Linux con systemd')
     parser.add_argument('--mode', choices=('demo', 'real'))
     parser.add_argument('--config', type=Path, help='Configuración del motor real')
+    parser.add_argument('--engine-dir', type=Path, help='Directorio del motor si no se encuentra automáticamente')
     parser.add_argument('--replace-config', action='store_true', help='Reemplazar configuración existente y guardar copia anterior')
     parser.add_argument('--dry-run', action='store_true', help='Mostrar plan sin escribir ni iniciar servicios')
     parser.add_argument('--display', choices=('web', 'native'), help='Interfaz nativa sin escritorio o navegador; conserva la opción instalada')
@@ -206,19 +232,32 @@ def main():
     if sys.version_info < (3, 10):
         parser.error('Se necesita Python 3.10 o posterior')
     try:
-        mode, config = plan(args.mode, args.config, args.replace_config, check_paths=not args.dry_run)
+        mode, config = plan(args.mode, args.config, args.replace_config, check_paths=not args.dry_run, engine_dir=args.engine_dir)
         previous = read_json(ETC / 'install.json') if (ETC / 'install.json').exists() else {}
         port = selected_port(args.port, previous)
+        if args.port is None and 'port' not in previous and not previous and sys.platform == 'linux':
+            for port in range(8080, 8101):
+                try:
+                    check_port_available(port)
+                    break
+                except ValueError:
+                    continue
+            else:
+                raise ValueError('No hay puertos libres entre 8080 y 8100; indicá --port')
         display = args.display or previous.get('display', 'native')
         framebuffer = args.framebuffer or previous.get('framebuffer')
         if display not in ('web', 'native'):
             raise ValueError('Interfaz inválida en los datos de instalación')
         if display == 'native':
             from native_install import validate_framebuffer
+            if not framebuffer:
+                framebuffer = automatic_framebuffer()
             validate_framebuffer(framebuffer, check_paths=False)
         elif args.framebuffer:
             raise ValueError('--framebuffer requiere --display native')
         print(f'Modo: {mode}\nAplicación: {APP}\nConfiguración: {ETC}\nServicio: {SERVICE}\nURL local: http://127.0.0.1:{port}')
+        if config:
+            print(f"Motor: {config['engine_dir']}\nDispositivos: detección automática al conectar; perfiles manuales opcionales")
         if args.dry_run:
             print('\nNo se modificó el sistema. Las rutas del motor se comprobarán al instalar.\n')
             print(service_text(mode, port))

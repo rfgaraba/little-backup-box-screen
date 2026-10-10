@@ -13,6 +13,32 @@ def config():
 
 
 class InstallerTests(unittest.TestCase):
+    def test_automatic_config_needs_no_connected_disks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'backup.py').write_text('')
+            data = install.automatic_config(root)
+            self.assertEqual(data['engine_dir'], str(root.resolve()))
+            self.assertEqual(data['sources'], [])
+            self.assertEqual(data['destinations'], [])
+            with self.assertRaises(ValueError):
+                install.automatic_config(root / 'missing')
+
+    def test_config_allows_automatic_discovery_without_profiles(self):
+        data = config()
+        data['sources'] = []
+        data['destinations'] = []
+        install.validate_config(data, False)
+        del data['sources']
+        del data['destinations']
+        install.validate_config(data, False)
+
+    def test_new_real_install_generates_config_and_demo_remains_explicit(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(install, 'ETC', Path(tmp)), patch('install.automatic_config', return_value=config()) as detect:
+            self.assertEqual(install.plan(check_paths=False), ('real', config()))
+            detect.assert_called_once_with(None)
+            self.assertEqual(install.plan(mode='demo', check_paths=False), ('demo', None))
+
     def test_port_selection_preserves_updates_and_validates(self):
         self.assertEqual(install.selected_port(None, {}), 8080)
         self.assertEqual(install.selected_port(None, {'port': 8081}), 8081)

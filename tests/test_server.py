@@ -6,6 +6,16 @@ from server import Engine, command
 
 
 class GatewayTests(unittest.TestCase):
+    def test_real_devices_are_discovered_without_configured_uuids(self):
+        source = {'id': 'auto:a', 'engine': 'anyusb', 'preset': '--uuid a', 'disk': '/dev/sda', 'sd': True}
+        target = {'id': 'auto:b', 'engine': 'usb', 'preset': '--uuid b', 'disk': '/dev/sdb', 'sd': False}
+        found = {'sources': [source, target], 'destinations': [dict(source, engine='usb'), target]}
+        engine = Engine({'engine_dir': '/engine'})
+        with patch('server.discover', return_value=found):
+            devices = engine.devices()
+        self.assertEqual(devices['automatic'], {'source': 'auto:a', 'destination': 'auto:b'})
+        self.assertIn('--uuid b', command(engine.config, devices['sources'][0], devices['destinations'][1], True))
+
     def test_command_uses_safe_explicit_arguments(self):
         argv = command({'engine_dir': '/engine'},
                        {'id': 'card', 'engine': 'anyusb', 'preset': '--uuid a'},

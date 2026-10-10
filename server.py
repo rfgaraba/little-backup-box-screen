@@ -41,7 +41,7 @@ class Engine:
 
     def devices(self):
         if self.config:
-            profiles = {k: [dict(d) for d in self.config[k]] for k in ('sources', 'destinations')}
+            profiles = {k: [dict(d) for d in self.config.get(k, [])] for k in ('sources', 'destinations')}
             try:
                 found = discover()
                 configured_cards = {d.get('preset') for d in profiles['sources'] if d.get('engine') == 'anyusb' and d.get('preset')}

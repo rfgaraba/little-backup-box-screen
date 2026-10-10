@@ -2,6 +2,23 @@
 
 Interfaz en español para una pantalla horizontal de **480 × 320**, con cuatro pestañas fijas: Estado, Copiar, Archivos y Ajustes. Botones de al menos 48 px, listas de dos elementos por página y inicio en Backup con detección automática y selección manual Origen → Destino → Confirmar → Progreso → Resultado. Ninguna vista necesita desplazamiento.
 
+## Instalación directa desde el repositorio
+
+Con Little Backup Box ya instalado y el controlador de pantalla funcionando:
+
+```sh
+git clone https://github.com/rfgaraba/little-backup-box-screen.git
+cd little-backup-box-screen
+sudo apt install python3-pyqt6
+sudo bash install.sh
+```
+
+Una instalación nueva usa el motor real y genera su configuración: busca `backup.py` en `/var/www/html/little-backup-box`, `/opt/little-backup-box`, `/home/*/little-backup-box`, `/root/little-backup-box` y junto a este repositorio. No requiere conectar discos ni escribir UUID. Los orígenes y destinos se descubren al conectarlos; si hay varios candidatos se seleccionan en la pantalla. La microSD del sistema queda excluida y la copia empieza al tocar Backup.
+
+Elige el primer puerto libre entre 8080 y 8100 y usa el framebuffer si hay uno solo. Si hay varios, indicar `--framebuffer /dev/fb1` (con el dispositivo correcto). Si el motor está en otra carpeta, indicar `--engine-dir /ruta/al/little-backup-box`. Si no se encuentra el motor, informa el problema; para probar sin copias reales, usar `--mode demo`. El instalador comprueba PyQt6 y el controlador, pero no los instala ni modifica el arranque del LCD.
+
+Para actualizar: `git pull` y `sudo bash install.sh`. Conserva el modo, las rutas, los perfiles opcionales, la pantalla y el puerto instalados. Si antes instalaste en demo, cambiar a real con `sudo bash install.sh --mode real`. `--config` queda disponible para instalaciones personalizadas; `sources` y `destinations` pueden estar vacíos y los UUID solo se necesitan para perfiles manuales opcionales.
+
 ## Raspberry Pi OS Lite: pantalla nativa SPI
 
 El enfoque para Raspberry Pi 5 (4 GB, sistema en microSD) con Raspberry Pi OS Lite de 64 bits y pantalla MHS35 es una **aplicación nativa Python + Qt**, sin Chromium, escritorio ni monitor HDMI. `native.py` dibuja mediante Qt LinuxFB en el framebuffer de la pantalla SPI y consulta el servicio local `server.py`. El servicio conserva el motor Little Backup Box, los trabajos y sus registros; cerrar o reiniciar solo la interfaz no cancela una copia. Wi-Fi puede usarse para administrar por SSH; Ajustes → Wi-Fi administra las redes mediante Comitup, el componente opcional de Little Backup Box. No añade transferencias inalámbricas al motor.
@@ -36,7 +53,7 @@ python3 install.py --display native --framebuffer /dev/fb1 --dry-run
 sudo bash install.sh --display native --framebuffer /dev/fb1
 ```
 
-Para el motor real, añadir `--mode real --config config.local.json` al comando. La interfaz se ejecuta como usuario temporal con acceso a los grupos `video` e `input`; el motor conserva sus permisos existentes. Las actualizaciones sin opciones conservan la interfaz y el framebuffer instalados. Una instalación nueva usa pantalla nativa por defecto y requiere `--framebuffer /dev/fbN`. Para usar solo el servidor web, indicar `--display web`.
+Una instalación nueva usa el motor real detectado automáticamente. Para probar sin motor, añadir `--mode demo`. La interfaz se ejecuta como usuario temporal con acceso a los grupos `video` e `input`; el motor conserva sus permisos existentes. Las actualizaciones sin opciones conservan la interfaz y el framebuffer instalados. Una instalación nueva usa pantalla nativa por defecto y detecta el framebuffer si hay uno solo. Para usar solo el servidor web, indicar `--display web`.
 
 El servicio de pantalla es independiente del servicio del motor:
 
@@ -72,7 +89,7 @@ Abrir http://127.0.0.1:8080 con el navegador a 480 × 320. El modo DEMO está id
 Instalar primero [Little Backup Box](https://github.com/outdoorbits/little-backup-box) siguiendo sus instrucciones. Esta aplicación reutiliza su `backup.py`; no implementa un motor de copia alternativo ni modifica su instalación.
 
 1. Copiar `config.example.json` a `config.local.json` y ajustar `engine_dir` al directorio real que contiene `backup.py`.
-2. Configurar los orígenes y destinos. `engine` admite `camera`, `anyusb`, `usb`, `internal` y `nvme` para origen; `usb`, `internal` y `nvme` para destino. También se detectan particiones USB/SD conectadas con `lsblk`, excluyendo el disco del sistema. Los perfiles quedan disponibles como alternativa manual. Reemplazar los UUID de ejemplo por los reales; `preset` usa el formato de identificador del motor. Identificadores distintos son obligatorios cuando ambos perfiles tienen el mismo tipo.
+2. Dejar `sources` y `destinations` vacíos para detectar las particiones USB/SD conectadas con `lsblk`, excluyendo el disco del sistema. Opcionalmente agregar perfiles manuales: `engine` admite `camera`, `anyusb`, `usb`, `internal` y `nvme` para origen; `usb`, `internal` y `nvme` para destino. En esos perfiles, `preset` usa el identificador del motor, por ejemplo `--uuid UUID-REAL`. Identificadores distintos son obligatorios cuando ambos perfiles tienen el mismo tipo.
 3. Ajustar `files_root` a la carpeta montada que se desea explorar. El navegador de archivos es de solo lectura, paginado y no sigue enlaces simbólicos.
 4. Ejecutar `python3 server.py --config config.local.json` con los permisos necesarios para la instalación del motor. El servidor escucha únicamente en loopback. En Raspberry Pi OS Lite, iniciar la interfaz nativa como se indica arriba. En un sistema con escritorio también se puede usar un navegador local en modo kiosco, por ejemplo `chromium --kiosk http://127.0.0.1:8080`.
 
@@ -101,9 +118,9 @@ python3 install.py --display native --framebuffer /dev/fb1 --dry-run
 sudo bash install.sh --display native --framebuffer /dev/fb1
 ```
 
-Esto instala en modo **demo** y habilita el arranque del servicio al encender la Raspberry Pi. La pantalla nativa se abre automáticamente. Con `--display web`, abrir http://127.0.0.1:8080 desde el navegador local. Abre Backup al iniciar la pantalla; no inicia copias automáticamente.
+Esto instala en modo **real** en una instalación nueva y habilita el arranque del servicio al encender la Raspberry Pi; para probar sin motor, añadir `--mode demo`. La pantalla nativa se abre automáticamente. Con `--display web`, abrir la URL local informada por el instalador desde el navegador local. Abre Backup al iniciar la pantalla; no inicia copias automáticamente.
 
-Para usar el motor real, instalar Little Backup Box, preparar los dispositivos y ajustar las rutas y UUID del archivo de configuración:
+La configuración manual es opcional. Para personalizar las rutas del motor o agregar perfiles fijos:
 
 ```sh
 cp config.example.json config.local.json
@@ -129,7 +146,7 @@ python3 install.py --display native --framebuffer /dev/fb1 --port 8081 --dry-run
 sudo bash install.sh --display native --framebuffer /dev/fb1 --port 8081
 ```
 
-En modo real, añadir `--mode real --config config.local.json`. Para ejecutar sin instalar, usar `python3 server.py --port 8081` y `native.py --port 8081` con los ajustes Qt correspondientes. La URL web será `http://127.0.0.1:8081`.
+Para cambiar una instalación demo a real, añadir `--mode real`; no hace falta `--config`. Para ejecutar sin instalar, usar `python3 server.py --port 8081` (demo) o agregar `--config config.local.json` (real), y `native.py --port 8081` con los ajustes Qt correspondientes. La URL web será `http://127.0.0.1:8081`.
 
 Para actualizar desde el repositorio, ejecutar `git pull` y luego `sudo bash install.sh`; si se usa un paquete, extraer la versión nueva primero. El instalador conserva el modo, la configuración, la pantalla y el puerto existentes. Si hay un respaldo activo, un puerto ocupado por otra instancia o un servicio activo cuyo estado no puede leerse, el instalador se detiene antes de cambiar los archivos. Al cambiar de puerto, comprueba el respaldo en el puerto anterior y la disponibilidad del nuevo. Evitar iniciar respaldos durante la actualización. Para cambiar una configuración existente se requiere `--config archivo.json --replace-config`; guarda la versión anterior en `config.previous.json`. Solo conserva la última copia anterior.
 
@@ -146,7 +163,7 @@ sudo systemctl disable --now little-backup-box-screen
 
 La instalación conserva los archivos del motor original. El servicio y sus procesos hijos se detienen juntos; parar o reiniciar durante una transferencia la interrumpe. Para iniciar la pantalla en modo kiosco, usar `chromium --kiosk http://127.0.0.1:8080` en la sesión gráfica local. El instalador deja el arranque del navegador a la configuración del escritorio que uses.
 
-`--dry-run` funciona también en Windows, no requiere sudo y no escribe archivos ni inicia servicios. Verifica el contenido de la configuración, pero las rutas Linux solo se comprueban al instalar. El instalador tiene pruebas automatizadas con un sistema de archivos temporal y llamadas a systemd simuladas; falta la prueba de instalación en una Raspberry Pi real.
+`--dry-run` no requiere sudo y no escribe archivos ni inicia servicios. En Windows usar `--mode demo --framebuffer /dev/fb1` o una configuración explícita con `--config`; la detección automática del motor y del framebuffer requiere la Raspberry Pi. Verifica el contenido de la configuración, pero las rutas Linux solo se comprueban al instalar. El instalador tiene pruebas automatizadas con un sistema de archivos temporal y llamadas a systemd simuladas; falta la prueba de instalación en una Raspberry Pi real.
 
 ## Validación
 
