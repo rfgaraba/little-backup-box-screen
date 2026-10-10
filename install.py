@@ -13,7 +13,7 @@ APP = Path('/opt/little-backup-box-screen')
 ETC = Path('/etc/little-backup-box-screen')
 UNIT = Path('/etc/systemd/system/little-backup-box-screen.service')
 SERVICE = UNIT.name
-FILES = ('server.py', 'native.py', 'native_install.py', 'tools/display_probe.py', 'web/index.html', 'web/app.js', 'web/style.css', 'LICENSE', 'README.md', 'config.example.json')
+FILES = ('server.py', 'hardware.py', 'native.py', 'native_install.py', 'tools/display_probe.py', 'web/index.html', 'web/app.js', 'web/style.css', 'LICENSE', 'README.md', 'config.example.json')
 
 
 def validate_config(config, check_paths=True):
@@ -188,7 +188,7 @@ def main():
     try:
         mode, config = plan(args.mode, args.config, args.replace_config, check_paths=not args.dry_run)
         previous = read_json(ETC / 'install.json') if (ETC / 'install.json').exists() else {}
-        display = args.display or previous.get('display', 'web')
+        display = args.display or previous.get('display', 'native')
         framebuffer = args.framebuffer or previous.get('framebuffer')
         if display not in ('web', 'native'):
             raise ValueError('Interfaz inválida en los datos de instalación')

@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import threading
 import time
+from hardware import discover, Wifi
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
 
@@ -36,11 +37,34 @@ class Engine:
         self.lock = threading.Lock()
         self.job = {'state': 'idle', 'progress': None, 'message': 'Listo para respaldar'}
         self.checksum = True
+        self.wifi = Wifi()
 
     def devices(self):
         if self.config:
-            return {k: [{'id': d['id'], 'label': d['label']} for d in self.config[k]]
-                    for k in ('sources', 'destinations')}
+            profiles = {k: [dict(d) for d in self.config[k]] for k in ('sources', 'destinations')}
+            try:
+                found = discover()
+                configured_cards = {d.get('preset') for d in profiles['sources'] if d.get('engine') == 'anyusb' and d.get('preset')}
+                for d in found['sources']:
+                    if d.get('preset') in configured_cards:
+                        d['sd'], d['engine'] = True, 'anyusb'
+                for d in found['destinations']:
+                    if d.get('preset') in configured_cards:
+                        d['sd'] = True
+                cards = [d for d in found['sources'] if d.get('sd')]
+                disks = [d for d in found['destinations'] if not d.get('sd')]
+                found['automatic'] = {'source': cards[0]['id'] if len(cards) == 1 else None,
+                                      'destination': disks[0]['id'] if len(disks) == 1 else None}
+                physical = {d['preset']: d['disk'] for d in found['sources']}
+                for group in profiles:
+                    for d in profiles[group]:
+                        if d.get('preset') in physical:
+                            d['disk'] = physical[d['preset']]
+                    presets = {d.get('preset') for d in found[group]}
+                    profiles[group] = found[group] + [d for d in profiles[group] if d.get('preset') not in presets]
+                return dict(profiles, automatic=found['automatic'])
+            except (OSError, ValueError, subprocess.SubprocessError):
+                return dict(profiles, automatic={}, detection_error='Detección no disponible; seleccioná manualmente')
         return {'sources': [{'id': 'card', 'label': 'Tarjeta SD · ejemplo'}, {'id': 'camera', 'label': 'Cámara USB · ejemplo'}, {'id': 'usb', 'label': 'Memoria USB · ejemplo'}],
                 'destinations': [{'id': 'ssd', 'label': 'SSD principal · ejemplo'}, {'id': 'disk', 'label': 'Disco USB · ejemplo'}]}
 
@@ -58,8 +82,10 @@ class Engine:
                 raise ValueError('Ya hay un respaldo en curso')
             argv = None
             if self.config:
-                source = next(d for d in self.config['sources'] if d['id'] == data['source'])
-                target = next(d for d in self.config['destinations'] if d['id'] == data['destination'])
+                source = next(d for d in devices['sources'] if d['id'] == data['source'])
+                target = next(d for d in devices['destinations'] if d['id'] == data['destination'])
+                if source.get('disk') and source.get('disk') == target.get('disk'):
+                    raise ValueError('Origen y destino pertenecen al mismo disco')
                 argv = command(self.config, source, target, self.checksum)
                 if not (Path(self.config['engine_dir']) / 'backup.py').is_file():
                     raise ValueError('No se encontró backup.py en la instalación configurada')
@@ -124,6 +150,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(self.server.engine.status())
             if url.path == '/api/devices':
                 return self.reply(self.server.engine.devices())
+            if url.path == '/api/wifi':
+                return self.reply(self.server.engine.wifi.status() if self.server.engine.config else
+                                  {'available': False, 'message': 'Wi-Fi no se modifica en modo demo'})
             if url.path == '/api/files':
                 query = parse_qs(url.query)
                 return self.reply(self.server.engine.files(query.get('path', [''])[0], int(query.get('page', ['0'])[0])))
@@ -153,6 +182,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('Solicitud no válida')
             if self.path == '/api/backup':
                 self.server.engine.start(data)
+            elif self.path == '/api/wifi':
+                if not self.server.engine.config:
+                    raise ValueError('Wi-Fi no se modifica en modo demo')
+                self.server.engine.wifi.apply(data)
             elif self.path == '/api/settings':
                 if not isinstance(data.get('checksum'), bool):
                     raise ValueError('Ajuste no válido')

@@ -30,7 +30,7 @@ const fs = require('node:fs');
   await page.request.post('http://127.0.0.1:8080/api/settings', {data:{checksum:true}});
   await page.goto('http://127.0.0.1:8080');
   await page.locator('#mode').getByText('DEMO', {exact:true}).waitFor();
-  await check('estado'); await click('Copiar'); await check('origen-1');
+  await check('backup-inicial'); await click('Seleccionar manual'); await check('origen-1');
   await click('Siguiente'); await check('origen-2'); await click('Anterior');
   await click('Tarjeta SD · ejemplo'); await check('destino');
   await click('Volver al origen'); await check('origen-volver');
@@ -41,7 +41,7 @@ const fs = require('node:fs');
   await click('Sesión 03'); await check('detalle'); await click('Volver a archivos');
   await click('Siguiente'); await click('Siguiente'); await check('archivos-final');
   await click('Ajustes'); await check('ajustes');
-  for (const name of ['Copia', 'Pantalla', 'Sistema']) {
+  for (const name of ['Copia', 'Wi-Fi', 'Sistema']) {
     await click(`${name} ›`); await check(`ajuste-${name}`);
     if (name === 'Copia') { await click('Checksum: activado'); await check('checksum'); }
     await click('Volver a ajustes');
@@ -55,7 +55,7 @@ const fs = require('node:fs');
   await page.getByRole('button', {name:'Subir',exact:true}).waitFor(); await check('carpeta');
   await click('Subir'); await page.getByRole('heading', {name:'Archivos del respaldo',exact:true}).waitFor(); await check('carpeta-subir');
   await page.route('**/api/backup', route => route.fulfill({status:400,json:{error:'El motor no está disponible'}}));
-  await click('Copiar'); await click('Tarjeta SD · ejemplo'); await click('SSD principal · ejemplo'); await click('Simular copia');
+  await click('Copiar'); await click('Seleccionar manual'); await click('Tarjeta SD · ejemplo'); await click('SSD principal · ejemplo'); await click('Simular copia');
   await page.getByRole('heading', {name:'No se pudo continuar',exact:true}).waitFor(); await check('error');
   assert.deepEqual(errors, []);
   console.log(`${checks} pantallas verificadas a 480 × 320; sin desbordes ni errores JS.`);

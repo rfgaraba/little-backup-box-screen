@@ -60,9 +60,12 @@ class NativeUITests(unittest.TestCase):
         screen.show()
         try:
             self.wait_for(lambda: screen.status is not None and bool(screen.devices['sources']))
+            self.assertEqual(screen.tab, 'Copiar')
+            self.assertEqual(screen.step, -1)
             self.assert_layout(screen)
             screen.new_job()
             self.assert_layout(screen)
+            screen.manual_copy()
             screen.choose(screen.devices['sources'][0])
             self.assert_layout(screen)
             screen.choose(screen.devices['destinations'][0])
@@ -90,6 +93,26 @@ class NativeUITests(unittest.TestCase):
             screen.close()
             screen.deleteLater()
             self.app.processEvents()
+
+    def test_touch_keyboard_fits_screen_and_masks_password(self):
+        from native import Screen, TouchKeyboard
+        from PyQt6.QtWidgets import QLineEdit
+        screen = Screen()
+        keyboard = TouchKeyboard('Contraseña', screen, True)
+        keyboard.show()
+        try:
+            self.app.processEvents()
+            self.assertEqual(keyboard.field.echoMode(), QLineEdit.EchoMode.Password)
+            self.assert_layout(keyboard)
+            keyboard.next_page()
+            self.app.processEvents()
+            self.assert_layout(keyboard)
+        finally:
+            keyboard.close()
+            screen.timer.stop()
+            screen.close()
+            keyboard.deleteLater()
+            screen.deleteLater()
 
 
 if __name__ == '__main__':

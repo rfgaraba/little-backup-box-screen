@@ -1,10 +1,10 @@
 # Little Backup Box · pantalla táctil
 
-Interfaz en español para una pantalla horizontal de **480 × 320**, con cuatro pestañas fijas: Estado, Copiar, Archivos y Ajustes. Botones de al menos 48 px, listas de dos elementos por página y flujo Origen → Destino → Confirmar → Progreso → Resultado. Ninguna vista necesita desplazamiento.
+Interfaz en español para una pantalla horizontal de **480 × 320**, con cuatro pestañas fijas: Estado, Copiar, Archivos y Ajustes. Botones de al menos 48 px, listas de dos elementos por página y inicio en Backup con detección automática y selección manual Origen → Destino → Confirmar → Progreso → Resultado. Ninguna vista necesita desplazamiento.
 
 ## Raspberry Pi OS Lite: pantalla nativa SPI
 
-El enfoque para Raspberry Pi 5 (4 GB, sistema en microSD) con Raspberry Pi OS Lite de 64 bits y pantalla MHS35 es una **aplicación nativa Python + Qt**, sin Chromium, escritorio ni monitor HDMI. `native.py` dibuja mediante Qt LinuxFB en el framebuffer de la pantalla SPI y consulta el servicio local `server.py`. El servicio conserva el motor Little Backup Box, los trabajos y sus registros; cerrar o reiniciar solo la interfaz no cancela una copia. Wi-Fi puede usarse para administrar por SSH; la aplicación no modifica USB, Wi-Fi ni Bluetooth ni añade transferencias inalámbricas al motor.
+El enfoque para Raspberry Pi 5 (4 GB, sistema en microSD) con Raspberry Pi OS Lite de 64 bits y pantalla MHS35 es una **aplicación nativa Python + Qt**, sin Chromium, escritorio ni monitor HDMI. `native.py` dibuja mediante Qt LinuxFB en el framebuffer de la pantalla SPI y consulta el servicio local `server.py`. El servicio conserva el motor Little Backup Box, los trabajos y sus registros; cerrar o reiniciar solo la interfaz no cancela una copia. Wi-Fi puede usarse para administrar por SSH; Ajustes → Wi-Fi administra las redes mediante Comitup, el componente opcional de Little Backup Box. No añade transferencias inalámbricas al motor.
 
 La compatibilidad del controlador MHS35 con la Pi 5 y tu kernel debe comprobarse en el equipo. [LCD-show/MHS35-show](https://github.com/goodtft/LCD-show/blob/master/MHS35-show) incluye ajustes X11, HDMI y, según la versión, framebuffer copying. Haber ejecutado ese script no garantiza que el framebuffer SPI ni el táctil estén disponibles para Qt. El instalador de esta aplicación no ejecuta LCD-show ni modifica el arranque o los controladores.
 
@@ -36,7 +36,7 @@ python3 install.py --display native --framebuffer /dev/fb1 --dry-run
 sudo bash install.sh --display native --framebuffer /dev/fb1
 ```
 
-Para el motor real, añadir `--mode real --config config.local.json` al comando. La interfaz se ejecuta como usuario temporal con acceso a los grupos `video` e `input`; el motor conserva sus permisos existentes. Las actualizaciones sin opciones conservan la interfaz y el framebuffer instalados. Una instalación nueva sin `--display` conserva el modo web por compatibilidad.
+Para el motor real, añadir `--mode real --config config.local.json` al comando. La interfaz se ejecuta como usuario temporal con acceso a los grupos `video` e `input`; el motor conserva sus permisos existentes. Las actualizaciones sin opciones conservan la interfaz y el framebuffer instalados. Una instalación nueva usa pantalla nativa por defecto y requiere `--framebuffer /dev/fbN`. Para usar solo el servidor web, indicar `--display web`.
 
 El servicio de pantalla es independiente del servicio del motor:
 
@@ -72,7 +72,7 @@ Abrir http://127.0.0.1:8080 con el navegador a 480 × 320. El modo DEMO está id
 Instalar primero [Little Backup Box](https://github.com/outdoorbits/little-backup-box) siguiendo sus instrucciones. Esta aplicación reutiliza su `backup.py`; no implementa un motor de copia alternativo ni modifica su instalación.
 
 1. Copiar `config.example.json` a `config.local.json` y ajustar `engine_dir` al directorio real que contiene `backup.py`.
-2. Configurar los orígenes y destinos. `engine` admite `camera`, `anyusb`, `usb`, `internal` y `nvme` para origen; `usb`, `internal` y `nvme` para destino. Son perfiles configurados, no un inventario de dispositivos conectados. Reemplazar los UUID de ejemplo por los reales; `preset` usa el formato de identificador del motor. Identificadores distintos son obligatorios cuando ambos perfiles tienen el mismo tipo.
+2. Configurar los orígenes y destinos. `engine` admite `camera`, `anyusb`, `usb`, `internal` y `nvme` para origen; `usb`, `internal` y `nvme` para destino. También se detectan particiones USB/SD conectadas con `lsblk`, excluyendo el disco del sistema. Los perfiles quedan disponibles como alternativa manual. Reemplazar los UUID de ejemplo por los reales; `preset` usa el formato de identificador del motor. Identificadores distintos son obligatorios cuando ambos perfiles tienen el mismo tipo.
 3. Ajustar `files_root` a la carpeta montada que se desea explorar. El navegador de archivos es de solo lectura, paginado y no sigue enlaces simbólicos.
 4. Ejecutar `python3 server.py --config config.local.json` con los permisos necesarios para la instalación del motor. El servidor escucha únicamente en loopback. En Raspberry Pi OS Lite, iniciar la interfaz nativa como se indica arriba. En un sistema con escritorio también se puede usar un navegador local en modo kiosco, por ejemplo `chromium --kiosk http://127.0.0.1:8080`.
 
@@ -84,7 +84,7 @@ Contrato CLI revisado contra el commit upstream `5e3c5f0120d7e4aa4d26a3e0e6f19a0
 
 ## Instalador para Raspberry Pi OS
 
-El instalador requiere Linux con systemd y Python 3.10 o posterior. Instala únicamente esta interfaz; no descarga ni instala el motor original, el entorno gráfico, Chromium ni los controladores de la pantalla. La resolución de 480 × 320 debe estar configurada en el sistema.
+El instalador requiere Linux con systemd y Python 3.10 o posterior. Instala esta interfaz y configura su arranque automático; no descarga ni instala el motor original, el entorno gráfico, Chromium ni los controladores de la pantalla. La resolución de 480 × 320 debe estar configurada en el sistema.
 
 Para generar el paquete desde este repositorio:
 
@@ -97,19 +97,19 @@ Copiar `dist/little-backup-box-screen-installer.zip` a la Raspberry Pi, por ejem
 ```sh
 python3 -m zipfile -e little-backup-box-screen-installer.zip .
 cd little-backup-box-screen
-python3 install.py --dry-run
-sudo bash install.sh
+python3 install.py --display native --framebuffer /dev/fb1 --dry-run
+sudo bash install.sh --display native --framebuffer /dev/fb1
 ```
 
-Esto instala en modo **demo** y habilita el arranque del servicio al encender la Raspberry Pi. Abrir http://127.0.0.1:8080 desde el navegador local. No inicia copias automáticamente.
+Esto instala en modo **demo** y habilita el arranque del servicio al encender la Raspberry Pi. La pantalla nativa se abre automáticamente. Con `--display web`, abrir http://127.0.0.1:8080 desde el navegador local. Abre Backup al iniciar la pantalla; no inicia copias automáticamente.
 
 Para usar el motor real, instalar Little Backup Box, preparar los dispositivos y ajustar las rutas y UUID del archivo de configuración:
 
 ```sh
 cp config.example.json config.local.json
 nano config.local.json
-python3 install.py --mode real --config config.local.json --dry-run
-sudo bash install.sh --mode real --config config.local.json
+python3 install.py --mode real --config config.local.json --display native --framebuffer /dev/fb1 --dry-run
+sudo bash install.sh --mode real --config config.local.json --display native --framebuffer /dev/fb1
 ```
 
 El instalador comprueba que existan `backup.py`, el intérprete y la carpeta de archivos; rechaza UUID de ejemplo e identificadores duplicados. El modo demo usa un usuario temporal de systemd. El modo real ejecuta el servicio como root para permitir las operaciones del motor, como en su interfaz original. La aplicación escucha solo en `127.0.0.1`.
@@ -120,7 +120,7 @@ Archivos instalados:
 - Configuración: `/etc/little-backup-box-screen/config.json`.
 - Registro del motor: `/var/lib/little-backup-box-screen/engine.log`.
 - Servicio: `little-backup-box-screen.service`.
-- Pantalla nativa opcional: `little-backup-box-display.service`, con ajustes opcionales en `/etc/little-backup-box-screen/display.env`.
+- Pantalla nativa (por defecto): `little-backup-box-display.service`, con ajustes opcionales en `/etc/little-backup-box-screen/display.env`.
 
 Para actualizar, extraer un paquete nuevo y ejecutar otra vez `sudo bash install.sh`: conserva el modo y la configuración existentes. Si hay un respaldo activo, un puerto ocupado por otra instancia o un servicio activo cuyo estado no puede leerse, el instalador se detiene antes de cambiar los archivos. Evitar iniciar respaldos durante la actualización. Para cambiar una configuración existente se requiere `--config archivo.json --replace-config`; guarda la versión anterior en `config.previous.json`. Solo conserva la última copia anterior.
 
@@ -150,3 +150,22 @@ npm run test:ui
 ```
 
 Las pruebas del adaptador comprueban argumentos seguros, rechazo de trabajos duplicados, resultados prudentes y confinamiento de rutas. Las pruebas visuales recorren las pestañas, paginación, detalles, ajustes, respaldo y errores; verifican desbordes, límites de pantalla y tamaño táctil. Las capturas se guardan en `test-results/`.
+
+## Backup al conectar dispositivos
+
+La pantalla principal consulta los dispositivos cada segundo. Una única tarjeta SD reconocida o unidad marcada como extraíble por Linux se propone como origen y un único disco USB no extraíble como destino; al estar ambos presentes se habilita **Backup**. La copia empieza al tocar el botón. Si se desconecta un dispositivo detectado, la selección se actualiza. Nunca se propone como dispositivo el disco que contiene `/`, `/boot` o `/boot/firmware`, ni se permite copiar entre particiones del mismo disco detectado.
+
+La microSD del sistema no es un origen de fotos. Para respaldar otra tarjeta se necesita un lector. La detección usa el tipo MMC, el indicador de medio extraíble o el modelo del lector; una memoria USB también puede marcarse como extraíble. Algunos lectores USB no informan que contienen una SD: usar **Seleccionar manual** o configurar su UUID como origen `anyusb` para reconocerlo en las próximas conexiones. Se requiere un sistema de archivos con UUID. Si hay varios candidatos, se conserva la selección manual. Los perfiles manuales pueden esperar un dispositivo desconectado, según el comportamiento del motor original.
+
+## Wi-Fi desde la pantalla
+
+**Ajustes → Wi-Fi** muestra estado, red conectada y nombre del hotspot. Permite elegir una red visible o escribir un SSID oculto e ingresar la contraseña mediante un teclado táctil, con mayúsculas, números y símbolos. Comitup guarda las redes para futuras conexiones.
+
+Seleccionar Comitup al instalar el motor Little Backup Box e instalar `python3-dbus` para el intérprete del servicio (`sudo apt install python3-dbus`). Esta interfaz detecta si Comitup no está disponible y lo informa; el modo demo no cambia la red.
+
+El botón **Hotspot** activa un punto de acceso manual sin borrar redes ni contraseñas guardadas. Se pausa temporalmente Comitup y se activa un perfil independiente de NetworkManager, con SSID `little-backup-box-screen`, contraseña generada y DHCP compartido. La pantalla muestra la contraseña y la IP reales. **Volver a Wi-Fi** desactiva ese perfil y reactiva Comitup, que vuelve a intentar conectarse a las redes conocidas. Mientras el hotspot manual está activo se interrumpe la conexión Wi-Fi del adaptador elegido. No cambia Ethernet ni deshabilita Comitup para próximos arranques: después de reiniciar el sistema vuelve el comportamiento automático. Este hotspot manual no usa el portal cautivo de Comitup; para acceder a Little Backup Box desde otro equipo usar la IP mostrada y el puerto de su instalación original. Se requieren `nmcli`, NetworkManager y permisos root del servicio real. Si falla la activación, se intenta reactivar Comitup.
+
+Referencias: [instalación de Little Backup Box](https://github.com/outdoorbits/little-backup-box), [Comitup](https://davesteele.github.io/comitup/) y [API D-Bus de Comitup](https://davesteele.github.io/comitup/man/comitup.pdf).
+
+El instalador habilita con systemd tanto el servidor como la pantalla nativa para iniciar al encender la Raspberry Pi. Identificar primero el framebuffer SPI con `python3 tools/display_probe.py`: `/dev/fb1` es solamente un ejemplo. Se necesita `python3-pyqt6` y un controlador de pantalla funcional.
+Referencia para el hotspot manual: [NetworkManager / nmcli](https://networkmanager.dev/docs/api/latest/nmcli.html).

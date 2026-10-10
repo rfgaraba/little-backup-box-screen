@@ -9,10 +9,62 @@ from PyQt6.QtGui import QFontMetrics
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PyQt6.QtWidgets import (
     QApplication, QHBoxLayout, QLabel, QProgressBar, QPushButton,
-    QVBoxLayout, QWidget,
+    QVBoxLayout, QWidget, QDialog, QLineEdit, QGridLayout,
 )
 
 BASE = 'http://127.0.0.1:8080'
+
+
+class TouchKeyboard(QDialog):
+    """Text entry that also works on LinuxFB without a desktop keyboard."""
+    def __init__(self, title, parent, secret=False):
+        super().__init__(parent)
+        self.setFixedSize(480, 320)
+        self.pages = ['abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+                      '0123456789!@#$%^&*()-_=+[]{}', ';:,.?/\\|`~\'"<>']
+        self.page = 0
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+        layout.addWidget(QLabel(title))
+        self.field = QLineEdit()
+        self.field.setFixedHeight(36)
+        if secret:
+            self.field.setEchoMode(QLineEdit.EchoMode.Password)
+        layout.addWidget(self.field)
+        self.keys = QGridLayout()
+        self.keys.setSpacing(2)
+        layout.addLayout(self.keys)
+        row = QHBoxLayout()
+        for label, action in [('Borrar', self.field.backspace), ('Espacio', lambda: self.field.insert(' ')),
+                              ('Otros', self.next_page), ('Cancelar', self.reject), ('Aceptar', self.accept)]:
+            b = QPushButton(label)
+            b.setFixedHeight(48)
+            b.clicked.connect(lambda checked=False, a=action: a())
+            row.addWidget(b)
+        layout.addLayout(row)
+        self.draw_keys()
+
+    def draw_keys(self):
+        while self.keys.count():
+            self.keys.takeAt(0).widget().deleteLater()
+        for i in range(27):
+            char = self.pages[self.page][i:i + 1]
+            b = QPushButton(char)
+            b.setFixedHeight(48)
+            b.setEnabled(bool(char))
+            b.clicked.connect(lambda checked=False, c=char: self.field.insert(c))
+            self.keys.addWidget(b, i // 9, i % 9)
+
+    def next_page(self):
+        self.page = (self.page + 1) % len(self.pages)
+        self.draw_keys()
+
+    @classmethod
+    def read(cls, title, parent, secret=False):
+        dialog = cls(title, parent, secret)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        return dialog.field.text(), accepted
 
 
 class TouchButton(QPushButton):
@@ -35,7 +87,9 @@ class Screen(QWidget):
         self.network = QNetworkAccessManager(self)
         self.status = None
         self.devices = {'sources': [], 'destinations': []}
-        self.tab, self.step, self.page = 'Estado', 0, 0
+        self.tab, self.step, self.page = 'Copiar', -1, 0
+        self.wifi = {}
+        self.wifi_ticks = 0
         self.source = self.destination = self.detail = self.setting = None
         self.path, self.error = '', ''
         self.files = {'entries': [], 'page': 0, 'pages': 1}
@@ -83,7 +137,7 @@ class Screen(QWidget):
 
     def request(self, path, callback, data=None, failure=None):
         request = QNetworkRequest(QUrl(BASE + path))
-        request.setTransferTimeout(5000)
+        request.setTransferTimeout(60000 if path == '/api/wifi' else 5000)
         if data is None:
             reply = self.network.get(request)
         else:
@@ -112,6 +166,13 @@ class Screen(QWidget):
         if self.polling:
             return
         self.polling = True
+        self.wifi_ticks += 1
+        if self.setting == 'Wi-Fi' and self.wifi_ticks % 5 == 0:
+            def wifi_done(data):
+                if data != self.wifi:
+                    self.wifi = data
+                    self.render()
+            self.request('/api/wifi', wifi_done)
 
         def status(data):
             self.polling = False
@@ -121,12 +182,16 @@ class Screen(QWidget):
                 self.error = ''
             if changed:
                 self.render()
-            if not self.devices['sources']:
-                self.request('/api/devices', self.set_devices)
+            self.request('/api/devices', self.set_devices)
         self.request('/api/status', status, failure=lambda: setattr(self, 'polling', False))
 
     def set_devices(self, data):
+        if data == self.devices:
+            return
         self.devices = data
+        if self.step == 2 and any(d and d['id'].startswith('auto:') and not any(x['id'] == d['id'] for x in data[g])
+                                  for d, g in ((self.source, 'sources'), (self.destination, 'destinations'))):
+            self.step = -1
         self.render()
 
     def switch(self, tab):
@@ -207,7 +272,7 @@ class Screen(QWidget):
             self.add('Nuevo respaldo', self.new_job)
 
     def new_job(self):
-        self.tab, self.step, self.page = 'Copiar', 0, 0
+        self.tab, self.step, self.page = 'Copiar', -1, 0
         self.source = self.destination = None
         self.render()
 
@@ -221,6 +286,20 @@ class Screen(QWidget):
         self.render()
 
     def copy_view(self):
+        if self.step == -1:
+            auto = self.devices.get('automatic', {})
+            self.source = next((d for d in self.devices['sources'] if d['id'] == auto.get('source')), None)
+            self.destination = next((d for d in self.devices['destinations'] if d['id'] == auto.get('destination')), None)
+            self.label('Backup · conectar SD y disco USB')
+            self.label('Origen: ' + (self.source['label'] if self.source else 'sin detectar') + '\nDestino: ' +
+                       (self.destination['label'] if self.destination else 'sin detectar'))
+            self.row([
+                ('Seleccionar manual', self.manual_copy, True),
+                ('Simular' if self.status['demo'] else 'Backup', self.start_job,
+                 bool(self.source and self.destination) and not self.pending),
+            ])
+            self.label(self.devices.get('detection_error', 'Elegí manualmente si no se detecta la tarjeta.'))
+            return
         self.label(('1 · Elegir origen', '2 · Elegir destino', '3 · Confirmar')[self.step])
         if self.step < 2:
             group = 'sources' if self.step == 0 else 'destinations'
@@ -248,6 +327,10 @@ class Screen(QWidget):
     def back_step(self):
         self.step = max(0, self.step - 1)
         self.page = 0
+        self.render()
+
+    def manual_copy(self):
+        self.step, self.page = 0, 0
         self.render()
 
     def change_page(self, delta):
@@ -324,12 +407,23 @@ class Screen(QWidget):
     def settings_view(self):
         self.label(self.setting or 'Ajustes')
         if not self.setting:
-            for name in ('Copia', 'Pantalla', 'Sistema'):
+            for name in ('Copia', 'Wi-Fi', 'Sistema'):
                 self.add(name, lambda n=name: self.show_setting(n))
         else:
             if self.setting == 'Copia':
                 self.label('Checksum · se aplica al próximo respaldo')
                 self.add('Activado' if self.status['checksum'] else 'Desactivado', self.toggle_checksum)
+            elif self.setting == 'Wi-Fi':
+                if not self.wifi.get('available'):
+                    self.label(self.wifi.get('message', 'Consultando Wi-Fi…'))
+                    self.add('Actualizar', lambda: self.show_setting('Wi-Fi'))
+                else:
+                    self.label(self.wifi['state'] + ' · ' + self.wifi['connection'] + '\nHotspot: ' + self.wifi['hotspot'])
+                    if self.wifi.get('forced'):
+                        self.label('Contraseña: ' + self.wifi.get('password', '') + '\nIP: ' + self.wifi.get('address', ''))
+                    self.row([('Volver a Wi-Fi' if self.wifi.get('forced') else 'Conectar red',
+                               self.resume_wifi if self.wifi.get('forced') else self.connect_wifi, True),
+                              ('Hotspot', self.hotspot_wifi, not self.wifi.get('forced'))])
             elif self.setting == 'Pantalla':
                 self.label('480 × 320 · pantalla SPI\nInterfaz nativa Qt · sin escritorio')
             else:
@@ -339,7 +433,73 @@ class Screen(QWidget):
 
     def show_setting(self, name):
         self.setting = name
+        if name == 'Wi-Fi':
+            def done(data):
+                self.wifi = data
+                self.render()
+            self.request('/api/wifi', done)
         self.render()
+
+    def connect_wifi(self):
+        networks = [n['ssid'] for n in self.wifi.get('networks', [])]
+        if networks:
+            picker = QDialog(self)
+            picker.setFixedSize(480, 320)
+            layout = QVBoxLayout(picker)
+            title = QLabel('Elegir red Wi-Fi')
+            layout.addWidget(title)
+            selected = []
+            page = [0]
+            buttons = []
+            def draw():
+                for i, b in enumerate(buttons):
+                    index = page[0] * 2 + i
+                    b.full_text = networks[index] if index < len(networks) else ''
+                    b.setText(b.full_text)
+                    b.setAccessibleName(b.full_text)
+                    b.setEnabled(index < len(networks))
+            for i in range(2):
+                def choose(index=i):
+                    selected.append(networks[page[0] * 2 + index])
+                    picker.accept()
+                b = self.button('', choose)
+                buttons.append(b)
+                layout.addWidget(b)
+            row = QHBoxLayout()
+            def change(delta):
+                page[0] = max(0, min((len(networks) - 1) // 2, page[0] + delta))
+                draw()
+            for label, action in [('Anterior', lambda: change(-1)), ('Siguiente', lambda: change(1)),
+                                  ('Otra red', picker.accept), ('Volver', picker.reject)]:
+                row.addWidget(self.button(label, action))
+            layout.addLayout(row)
+            draw()
+            if picker.exec() != QDialog.DialogCode.Accepted:
+                return
+            ssid, ok = (selected[0], True) if selected else TouchKeyboard.read('Red Wi-Fi (SSID)', self)
+        else:
+            ssid, ok = TouchKeyboard.read('Red Wi-Fi (SSID)', self)
+        if not ok or not ssid:
+            return
+        password, ok = TouchKeyboard.read('Contraseña (vacía si es abierta)', self, True)
+        if ok:
+            self.request('/api/wifi', lambda _: self.show_setting('Wi-Fi'),
+                         {'action': 'connect', 'ssid': ssid, 'password': password})
+
+    def hotspot_wifi(self):
+        dialog = QDialog(self)
+        dialog.setFixedSize(480, 320)
+        layout = QVBoxLayout(dialog)
+        message = QLabel('Activar hotspot. Se interrumpirá la conexión Wi-Fi actual; tus redes y contraseñas quedan guardadas. Podés volver a Wi-Fi cuando quieras.')
+        message.setWordWrap(True)
+        layout.addWidget(message)
+        layout.addWidget(self.button('Cancelar', dialog.reject))
+        layout.addWidget(self.button('Activar hotspot', dialog.accept))
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.request('/api/wifi', lambda _: self.show_setting('Wi-Fi'), {'action': 'hotspot'})
+
+    def resume_wifi(self):
+        self.request('/api/wifi', lambda _: self.show_setting('Wi-Fi'), {'action': 'resume'})
 
     def toggle_checksum(self):
         def done(data):
