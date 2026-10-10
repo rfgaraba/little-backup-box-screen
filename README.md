@@ -9,13 +9,14 @@ Con Little Backup Box ya instalado y el controlador de pantalla funcionando:
 ```sh
 git clone https://github.com/rfgaraba/little-backup-box-screen.git
 cd little-backup-box-screen
-sudo apt install python3-pyqt6
 sudo bash install.sh
 ```
 
 Una instalación nueva usa el motor real y genera su configuración: busca `backup.py` en `/var/www/html/little-backup-box`, `/opt/little-backup-box`, `/home/*/little-backup-box`, `/root/little-backup-box` y junto a este repositorio. No requiere conectar discos ni escribir UUID. Los orígenes y destinos se descubren al conectarlos; si hay varios candidatos se seleccionan en la pantalla. La microSD del sistema queda excluida y la copia empieza al tocar Backup.
 
-Elige el primer puerto libre entre 8080 y 8100 y usa el framebuffer si hay uno solo. Si hay varios, indicar `--framebuffer /dev/fb1` (con el dispositivo correcto). Si el motor está en otra carpeta, indicar `--engine-dir /ruta/al/little-backup-box`. Si no se encuentra el motor, informa el problema; para probar sin copias reales, usar `--mode demo`. El instalador comprueba PyQt6 y el controlador, pero no los instala ni modifica el arranque del LCD.
+Elige el primer puerto libre entre 8080 y 8100 y usa el framebuffer si hay uno solo. Si hay varios, indicar `--framebuffer /dev/fb1` (con el dispositivo correcto). Si el motor está en otra carpeta, indicar `--engine-dir /ruta/al/little-backup-box`. Si no se encuentra el motor, informa el problema; para probar sin copias reales, usar `--mode demo`.
+
+El instalador detecta las dependencias faltantes e instala con `apt-get update` y `apt-get install -y` solamente las necesarias: `python3-pyqt6` para la pantalla nativa y `util-linux` si falta `lsblk` en modo real. Después vuelve a comprobarlas, incluido el plugin Qt LinuxFB. Requiere conexión a los repositorios si faltan paquetes; si apt falla, muestra el error y no detiene ni reconfigura los servicios de la aplicación. `--dry-run` solo informa los paquetes que se comprobarán y no ejecuta apt. El controlador del LCD debe estar funcionando previamente; el instalador no modifica su arranque.
 
 Para actualizar: `git pull` y `sudo bash install.sh`. Conserva el modo, las rutas, los perfiles opcionales, la pantalla y el puerto instalados. Si antes instalaste en demo, cambiar a real con `sudo bash install.sh --mode real`. `--config` queda disponible para instalaciones personalizadas; `sources` y `destinations` pueden estar vacíos y los UUID solo se necesitan para perfiles manuales opcionales.
 
@@ -101,7 +102,7 @@ Contrato CLI revisado contra el commit upstream `5e3c5f0120d7e4aa4d26a3e0e6f19a0
 
 ## Instalador para Raspberry Pi OS
 
-El instalador requiere Linux con systemd y Python 3.10 o posterior. Instala esta interfaz y configura su arranque automático; no descarga ni instala el motor original, el entorno gráfico, Chromium ni los controladores de la pantalla. La resolución de 480 × 320 debe estar configurada en el sistema.
+El instalador requiere Linux con systemd y Python 3.10 o posterior. Instala esta interfaz, las dependencias de sistema faltantes y configura su arranque automático; el motor original y el controlador de pantalla deben estar instalados previamente. La resolución de 480 × 320 debe estar configurada en el sistema.
 
 Para generar el paquete desde este repositorio:
 

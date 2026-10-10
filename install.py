@@ -1,4 +1,4 @@
-"""Install the touch frontend on Linux/systemd. No downloads or engine changes."""
+"""Install the touch frontend and missing OS dependencies on Linux/systemd."""
 import argparse
 import json
 import os
@@ -171,7 +171,11 @@ def install(mode, config, display='web', framebuffer=None, port=8080):
     validate_port(port)
     import native_install
     if display == 'native':
-        native_install.check_dependencies(framebuffer)
+        native_install.check_dependencies(framebuffer, install_missing=True)
+    if mode == 'real' and not shutil.which('lsblk'):
+        native_install.install_packages(['util-linux'])
+        if not shutil.which('lsblk'):
+            raise ValueError('util-linux se instaló pero no se encontró lsblk en PATH')
     previous = read_json(ETC / 'install.json') if (ETC / 'install.json').exists() else {}
     active = ensure_idle(selected_port(None, previous), port)
     native_install.stop()
@@ -259,6 +263,9 @@ def main():
         if config:
             print(f"Motor: {config['engine_dir']}\nDispositivos: detección automática al conectar; perfiles manuales opcionales")
         if args.dry_run:
+            print('Al instalar se comprobarán las dependencias y apt instalará las faltantes: '
+                  + ', '.join((['python3-pyqt6'] if display == 'native' else [])
+                              + (['util-linux (lsblk)'] if mode == 'real' else [])))
             print('\nNo se modificó el sistema. Las rutas del motor se comprobarán al instalar.\n')
             print(service_text(mode, port))
             if display == 'native':

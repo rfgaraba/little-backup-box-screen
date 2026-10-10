@@ -1,6 +1,7 @@
 """Optional native display unit; no boot, driver, HDMI or network changes."""
 from pathlib import Path
 import re
+import shutil
 import subprocess
 
 SERVICE = 'little-backup-box-display.service'
@@ -45,17 +46,42 @@ WantedBy=multi-user.target
 '''
 
 
-def check_dependencies(framebuffer):
-    validate_framebuffer(framebuffer)
+def qt_available():
     result = subprocess.run(['/usr/bin/python3', '-c',
                              'from PyQt6 import QtWidgets, QtNetwork; '
                              'from PyQt6.QtCore import QLibraryInfo; '
                              'from pathlib import Path; '
                              'import sys; '
                              'sys.exit(0 if (Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.PluginsPath)) '
-                             '/ "platforms/libqlinuxfb.so").is_file() else 1)'], check=False)
-    if result.returncode:
-        raise ValueError('Se necesita PyQt6 con el plugin LinuxFB. Instalá primero: sudo apt install python3-pyqt6')
+                             '/ "platforms/libqlinuxfb.so").is_file() else 1)'], check=False,
+                            capture_output=True, text=True)
+    return result.returncode == 0
+
+
+def install_packages(packages):
+    if not packages:
+        return
+    apt = shutil.which('apt-get')
+    if not apt:
+        raise ValueError('No se encontró apt-get. Instalá estas dependencias con el gestor de tu sistema: ' + ' '.join(packages))
+    print('Instalando dependencias faltantes: ' + ', '.join(packages), flush=True)
+    try:
+        subprocess.run([apt, 'update'], check=True)
+        subprocess.run([apt, 'install', '-y', *packages], check=True)
+    except subprocess.CalledProcessError as exc:
+        raise ValueError('No se pudieron instalar las dependencias. Revisá la salida de apt, la conexión y los repositorios; luego volvé a ejecutar el instalador') from exc
+
+
+def check_dependencies(framebuffer, install_missing=False):
+    validate_framebuffer(framebuffer)
+    if qt_available():
+        return
+    if install_missing:
+        install_packages(['python3-pyqt6'])
+        if qt_available():
+            return
+        raise ValueError('PyQt6 se instaló pero el plugin LinuxFB no está disponible para /usr/bin/python3. Revisá los paquetes Qt del sistema')
+    raise ValueError('Se necesita PyQt6 con el plugin LinuxFB. Instalá primero: sudo apt install python3-pyqt6')
 
 
 def stop():
