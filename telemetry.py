@@ -15,6 +15,9 @@ def parse_progress(text):
               'phase': 'Procesando archivos', 'eta': None}
     if counts:
         result.update(files_processed=int(counts[1]), files_total=int(counts[2]))
+        if int(counts[2]) == 0:
+            result['progress'] = None
+            result['phase'] = 'Verificando respaldo'
         # A '+' means the engine does not yet know the full file count.
         if counts[3]:
             result['progress'] = None

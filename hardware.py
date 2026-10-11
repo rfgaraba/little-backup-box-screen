@@ -5,7 +5,80 @@ import secrets
 import threading
 import socket
 import shutil
+import time
+import os
+import tempfile
 from pathlib import Path
+
+_usage_cache = {}
+
+
+def storage_usage(node, probe=False):
+    points = [p for p in node.get('mountpoints', []) or [] if p]
+    def usage(path):
+        data = os.statvfs(path)
+        return (data.f_blocks - data.f_bfree) * data.f_frsize, data.f_bavail * data.f_frsize
+    if points:
+        try:
+            return usage(points[0])
+        except OSError:
+            return None, None
+    if not probe or not hasattr(os, 'geteuid') or os.geteuid() != 0:
+        return None, None
+    key = node['name'], node['uuid']
+    cached = _usage_cache.get(key)
+    if cached and time.monotonic() - cached[0] < 30:
+        return cached[1]
+    # Read filesystem statistics without modifying media. Never probe during a job.
+    mountpoint = tempfile.mkdtemp(prefix='lbb-space-')
+    try:
+        options = 'ro,noload' if node.get('fstype') in ('ext3', 'ext4') else 'ro'
+        subprocess.run(['mount', '-o', options, '--', node['name'], mountpoint],
+                       check=True, capture_output=True, timeout=10)
+        result = usage(mountpoint)
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    finally:
+        if os.path.ismount(mountpoint):
+            subprocess.run(['umount', '--', mountpoint], check=True, capture_output=True, timeout=10)
+        # Never recursively remove a directory that might still be a mountpoint.
+        try:
+            os.rmdir(mountpoint)
+        except OSError:
+            pass
+    _usage_cache[key] = time.monotonic(), result
+    return result
+
+
+class SystemMonitor:
+    def __init__(self):
+        self.previous_cpu = None
+        self.lock = threading.Lock()
+
+    def sample(self):
+        result = {'cpu_percent': None, 'temperature_c': None, 'memory': {}, 'uptime_seconds': None}
+        with self.lock:
+            try:
+                cpu = [int(v) for v in Path('/proc/stat').read_text().splitlines()[0].split()[1:9]]
+                total, idle = sum(cpu), cpu[3] + cpu[4]
+                if self.previous_cpu:
+                    dt, di = total - self.previous_cpu[0], idle - self.previous_cpu[1]
+                    if dt > 0:
+                        result['cpu_percent'] = round(max(0, min(100, 100 * (dt - di) / dt)), 1)
+                self.previous_cpu = total, idle
+                memory = {line.split(':')[0]: int(line.split()[1]) * 1024
+                          for line in Path('/proc/meminfo').read_text().splitlines()}
+                result['memory'] = {'total_bytes': memory['MemTotal'],
+                                    'used_bytes': memory['MemTotal'] - memory['MemAvailable'],
+                                    'available_bytes': memory['MemAvailable']}
+                result['uptime_seconds'] = int(float(Path('/proc/uptime').read_text().split()[0]))
+            except (OSError, ValueError, KeyError, IndexError):
+                pass
+            try:
+                result['temperature_c'] = float(Path('/sys/class/thermal/thermal_zone0/temp').read_text()) / 1000
+            except (OSError, ValueError):
+                pass
+        return result
 
 
 def remove_device(identifier):
@@ -93,9 +166,9 @@ def network_info():
     return result
 
 
-def discover():
+def discover(probe=False):
     result = subprocess.run(['lsblk', '--json', '--paths', '--output',
-                             'NAME,TYPE,TRAN,RM,MODEL,UUID,FSTYPE,MOUNTPOINTS'],
+                             'NAME,TYPE,TRAN,RM,MODEL,UUID,FSTYPE,MOUNTPOINTS,LABEL,SIZE,FSUSED,FSAVAIL', '--bytes'],
                             capture_output=True, text=True, check=True, timeout=5)
     sources, destinations = [], []
     def protected(n):
@@ -105,7 +178,12 @@ def discover():
             w in str(disk.get('model', '')).lower() for w in ('sd reader', 'sd/mmc', 'card reader'))
         if n.get('uuid') and n.get('fstype') not in (None, 'swap', 'crypto_LUKS', 'LVM2_member') and (sd or disk.get('tran') == 'usb'):
             d = {'id': 'auto:' + n['uuid'], 'label': f"{n['name']} · {disk.get('model') or 'USB/SD'}",
-                 'engine': 'anyusb' if sd else 'usb', 'preset': '--uuid ' + n['uuid'], 'disk': disk['name'], 'sd': sd}
+                 'engine': 'anyusb' if sd else 'usb', 'preset': '--uuid ' + n['uuid'], 'disk': disk['name'], 'sd': sd,
+                 'name': n.get('label') or str(disk.get('model') or 'USB/SD').strip(),
+                 'capacity_bytes': n.get('size'), 'used_bytes': n.get('fsused'), 'free_bytes': n.get('fsavail'),
+                 'available': True}
+            if probe:
+                d['used_bytes'], d['free_bytes'] = storage_usage(n, probe=True)
             sources.append(d)
             destinations.append(dict(d, engine='usb'))
         for c in n.get('children', []):

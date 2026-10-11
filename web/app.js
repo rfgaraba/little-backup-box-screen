@@ -4,6 +4,39 @@ let tab = 'Copiar', step = -1, source = null, destination = null, page = 0;
 let wifi = {};
 let wifiTicks = 0;
 let info = {};
+let monitor = {};
+const space = value => value == null ? '—' : `${(Number(value) / 1e9).toFixed(1)} GB`;
+function syncSelection() {
+  source = devices.sources.find(d => d.id === source?.id && d.available !== false) || devices.sources.find(d => d.id === devices.automatic?.source);
+  destination = devices.destinations.find(d => d.id === destination?.id && d.available !== false) || devices.destinations.find(d => d.id === devices.automatic?.destination);
+}
+async function startBackup() {
+  busy = true;
+  try { status = await api('/api/backup', {source: source.id, destination: destination.id}); step = 3; }
+  finally { busy = false; }
+}
+async function ejectDevice(device) {
+  if (!confirm(`¿Retirar ${device.name || device.label}? Esperá la confirmación antes de desconectarlo.`)) return;
+  busy = true; render();
+  try { status = await api('/api/remove', {device: device.id}); devices = await api('/api/devices'); }
+  finally { busy = false; }
+}
+function storagePanel(role, device) {
+  const panel = document.createElement('div'); panel.className = 'storage-panel';
+  const top = document.createElement('div'); top.className = 'storage-top';
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 56 48'); svg.setAttribute('aria-hidden', 'true');
+  const shape = document.createElementNS(svg.namespaceURI, 'path');
+  shape.setAttribute('d', role === 0 ? 'M12 4 H38 L44 10 V43 H12 Z M18 8 V18 M25 8 V18 M32 8 V18' : 'M10 5 H46 V43 H10 Z M15 31 H41 M36 36 H39');
+  svg.append(shape);
+  const eject = button('⏏', () => ejectDevice(device));
+  eject.setAttribute('aria-label', `Retirar ${role === 0 ? 'origen' : 'destino'}`);
+  eject.disabled = !device?.disk || busy || status.removing || status.demo;
+  top.append(svg, eject); panel.append(top, text('p', role === 0 ? 'ORIGEN' : 'DESTINO', 'hint'));
+  panel.append(button(device?.name || device?.label || 'Conectar unidad', () => {step = role; page = 0;}));
+  panel.append(text('p', `Usado ${space(device?.used_bytes)}`), text('p', `Libre ${space(device?.free_bytes)}`));
+  return panel;
+}
 function updateWifiIndicator() {
   const indicator = document.querySelector('#wifi-indicator');
   const state = info.wifi?.state || 'unavailable';
@@ -64,7 +97,7 @@ function pager(count, onChange, parent) {
 async function loadFiles() { files = await api(`/api/files?path=${encodeURIComponent(path)}&page=${page}`); page = files.page; }
 function jobView() {
   const job = status.job, running = ['running', 'cancelling'].includes(job.state), metrics = job.metrics;
-  content.append(text('h1', running ? 'Respaldo en curso' : job.state === 'idle' ? 'Listo para respaldar' : 'Resultado del respaldo'));
+  content.append(text('h1', running ? job.message : job.state === 'success' ? 'Copia completada con éxito' : job.state === 'error' ? 'Falló el respaldo' : 'Resultado del respaldo', job.state === 'success' ? 'success' : job.state === 'error' ? 'error' : ''));
   const c = card(job.message);
   if (job.progress !== null) { c.prepend(text('div', `${job.progress}%${metrics ? ' · etapa por archivos' : ''}`, metrics ? 'hint' : 'metric')); }
   if (running) { const p = document.createElement('progress'); p.max = 100; if (job.progress !== null) p.value = job.progress; p.setAttribute('aria-label', 'Progreso del respaldo'); c.append(p); }
@@ -78,7 +111,7 @@ function jobView() {
     if (metrics.files_total != null) c.append(text('p', `Archivos: ${metrics.files_processed} / ${metrics.files_total}`));
   }
   if (job.state === 'idle') content.append(text('p', status.demo ? 'Probá el flujo sin copiar archivos.' : 'Seleccioná origen y destino configurados.'));
-  if (!running) content.append(button('Nuevo respaldo', () => { tab = 'Copiar'; step = -1; page = 0; source = destination = null; }, 'primary'));
+  if (!running) actions(button(['error', 'review', 'cancelled'].includes(job.state) ? 'Reintentar' : 'Nuevo respaldo', () => {tab = 'Copiar'; step = -1; page = 0;}, 'primary'), button('Unidades · retirar', () => {tab = 'Copiar'; step = -1; page = 0;}));
   if (job.state === 'running') content.append(button('Cancelar respaldo', async () => {
     if (!confirm('¿Cancelar el respaldo? Puede quedar un archivo incompleto. Esperá la confirmación antes de retirar dispositivos.')) return;
     status = await api('/api/cancel', {});
@@ -87,35 +120,35 @@ function jobView() {
 function render() {
   document.querySelector('#mode').textContent = status.demo ? 'DEMO' : '';
   updateWifiIndicator();
-  nav.replaceChildren(...['Estado', 'Copiar', 'Archivos', 'Ajustes'].map(name => {
-    const b = button(name, async () => { tab = name; detail = setting = null; page = 0; if (name === 'Archivos') await loadFiles(); });
-    if (name === tab) b.setAttribute('aria-current', 'page'); return b;
+  nav.replaceChildren(...['Respaldo', 'Utilidades', 'Ajustes'].map(name => {
+    const b = button(name, async () => { tab = name === 'Respaldo' ? 'Copiar' : name; detail = setting = null; page = 0; });
+    if ((name === 'Respaldo' && tab === 'Copiar') || name === tab || (name === 'Utilidades' && tab === 'Archivos')) b.setAttribute('aria-current', 'page'); return b;
   }));
   content.replaceChildren();
+  if (status.shutting_down) {content.append(text('h1', 'Apagando el equipo…'), card('Esperá a que termine antes de quitar la alimentación.')); return;}
   if (error) { content.append(text('h1', 'No se pudo continuar'), card(error)); content.append(button('Volver', () => { error = ''; }, 'primary')); return; }
   if (tab === 'Estado') return jobView();
   if (tab === 'Copiar') {
     if (['running', 'cancelling'].includes(status.job.state) || step === 3) return jobView();
     if (step === -1) {
-      source = devices.sources.find(d => d.id === devices.automatic?.source);
-      destination = devices.destinations.find(d => d.id === devices.automatic?.destination);
-      content.append(text('h1', 'Backup'), card(`Origen: ${source?.label || 'conectá una SD'}`, `Destino: ${destination?.label || 'conectá un disco USB'}`));
-      const start = button(status.demo ? 'Simular backup' : 'Backup', async () => {
-        busy = true; try { status = await api('/api/backup', {source: source.id, destination: destination.id}); step = 3; } finally { busy = false; }
-      }, 'primary');
-      start.disabled = !source || !destination || busy;
-      content.append(text('p', devices.detection_error || 'Si no se detectan, seleccioná origen y destino.', 'hint'));
-      actions(button('Seleccionar manual', () => { step = 0; page = 0; }), start);
+      syncSelection();
+      const panels = document.createElement('div'); panels.className = 'storage-panels';
+      panels.append(storagePanel(0, source), storagePanel(1, destination)); content.append(panels);
+      const start = button(status.demo ? 'Simular respaldo' : 'Iniciar respaldo', startBackup, 'primary');
+      start.disabled = !source || !destination || source.id === destination.id ||
+        (source.disk && source.disk === destination.disk) || busy || status.removing;
+      content.append(start);
+      if (busy || status.removal?.message) content.append(text('p', busy ? 'Retirando unidad…' : status.removal.message, 'hint'));
       return;
     }
     content.append(text('h1', ['1 · Elegir origen', '2 · Elegir destino', '3 · Confirmar respaldo'][step]));
     if (step < 2) {
-      const list = (step === 0 ? devices.sources : devices.destinations).filter(d => step === 0 || d.id !== source?.id);
+      const list = (step === 0 ? devices.sources : devices.destinations).filter(d => d.available !== false && (step === 0 || d.id !== source?.id));
       const pages = Math.max(1, Math.ceil(list.length / 2)); page = Math.min(page, pages - 1);
       const e = document.createElement('div'); e.className = 'list';
-      list.slice(page * 2, page * 2 + 2).forEach(d => e.append(button(d.label, () => { if (step === 0) source = d; else destination = d; step++; page = 0; })));
+      list.slice(page * 2, page * 2 + 2).forEach(d => e.append(button(d.label, () => { if (step === 0) source = d; else destination = d; step = -1; page = 0; })));
       content.append(e); if (!list.length) content.append(card('No hay dispositivos configurados.'));
-      if (step === 1) content.append(button('Volver al origen', () => { step = 0; page = 0; }));
+      content.append(button('Volver', () => { step = -1; page = 0; }));
       if (pages > 1) pager(pages, p => { page = p; });
     } else {
       content.append(card(`De: ${source.label}`, `A: ${destination.label}`));
@@ -123,6 +156,24 @@ function render() {
       actions(button('Volver', () => { step = 1; page = 0; }), button(status.demo ? 'Simular copia' : 'Iniciar copia', async () => {
         busy = true; try { status = await api('/api/backup', { source: source.id, destination: destination.id }); step = 3; } finally { busy = false; }
       }, 'primary'));
+    }
+  } else if (tab === 'Utilidades') {
+    if (setting === 'Monitor') {
+      const memory = monitor.memory || {};
+      content.append(text('h1', 'Monitor del sistema'));
+      const cpu = monitor.cpu_percent == null ? 'Midiendo…' : `${monitor.cpu_percent.toFixed(1)}%`;
+      const systemCard = card(`CPU ${cpu}${monitor.temperature_c == null ? '' : ' · ' + monitor.temperature_c.toFixed(1) + ' °C'}`,
+        `Memoria ${space(memory.used_bytes)} / ${space(memory.total_bytes)}`);
+      systemCard.classList.add('transfer-metrics'); content.append(systemCard);
+      const units = [...new Map([...devices.sources, ...devices.destinations].filter(d => d.disk).map(d => [d.disk, d])).values()];
+      page = Math.min(page, Math.max(0, units.length - 1));
+      const unit = units[page];
+      if (unit) {const unitCard = card(`${unit.name || unit.label} · ${space(unit.capacity_bytes)}`, `Usado ${space(unit.used_bytes)} · Libre ${space(unit.free_bytes)}`); unitCard.classList.add('transfer-metrics'); content.append(unitCard);}
+      actions(button('Volver', () => {setting = null; page = 0;}), button('Otra unidad', () => {page = (page + 1) % Math.max(1, units.length);}));
+    } else {
+      content.append(text('h1', 'Utilidades'));
+      content.append(button('Archivos', async () => {tab = 'Archivos'; page = 0; await loadFiles();}));
+      content.append(button('Monitor del sistema', async () => {setting = 'Monitor'; monitor = await api('/api/monitor');}));
     }
   } else if (tab === 'Archivos') {
     if (detail) {
@@ -142,6 +193,12 @@ function render() {
       const list = document.createElement('div'); list.className = 'list';
       list.classList.add('settings-list');
       ['Info', 'Copia', 'Wi-Fi', 'Sistema'].forEach(s => list.append(button(s + ' ›', async () => { setting = s; if (s === 'Wi-Fi') wifi = await api('/api/wifi'); if (s === 'Info') info = await api('/api/info'); }))); content.append(list);
+      const poweroff = button('Apagar', async () => {
+        if (!confirm('¿Apagar la Raspberry Pi? Se cerrarán los servicios y se desmontarán los discos. Esperá antes de quitar la alimentación.')) return;
+        status = await api('/api/shutdown', {});
+      });
+      poweroff.disabled = status.demo || busy || status.removing || ['running', 'cancelling'].includes(status.job.state);
+      content.append(poweroff);
     } else {
       if (setting === 'Info') {
         content.append(card(`Dispositivo: ${info.hostname || 'Consultando…'}`, `IP: ${info.ip || 'Sin dirección IP'}`, `MAC: ${info.mac || 'No disponible'}`, `Interfaz: ${info.interface || 'Sin conexión'}`));
@@ -193,7 +250,9 @@ function render() {
   }
 }
 async function refresh() {
+  if (status.shutting_down) return;
   try {
+    if (tab === 'Utilidades' && setting === 'Monitor') {monitor = await api('/api/monitor'); render();}
     if (++wifiTicks % 5 === 0) {
       info = await api('/api/info');
       updateWifiIndicator();

@@ -113,6 +113,30 @@ class TouchButton(QPushButton):
             self.full_text, Qt.TextElideMode.ElideRight, max(1, self.width() - 20)))
 
 
+def space(value):
+    return '—' if value is None else f'{float(value) / 1e9:.1f} GB'
+
+
+class StorageIcon(QWidget):
+    def __init__(self, card=False):
+        super().__init__()
+        self.card = card
+        self.setFixedSize(56, 48)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor('#79dcc6'), 2))
+        painter.setBrush(QColor('#253b50'))
+        painter.drawRoundedRect(10, 4, 36, 39, 4, 4)
+        if self.card:
+            for x in (17, 24, 31, 38):
+                painter.drawLine(x, 8, x, 18)
+        else:
+            painter.drawLine(15, 31, 41, 31)
+            painter.drawEllipse(35, 35, 3, 3)
+
+
 class Screen(QWidget):
     def __init__(self):
         super().__init__()
@@ -124,6 +148,7 @@ class Screen(QWidget):
         self.tab, self.step, self.page = 'Copiar', -1, 0
         self.wifi = {}
         self.info = {}
+        self.monitor = {}
         self.info_pending = False
         self.wifi_ticks = 0
         self.source = self.destination = self.detail = self.setting = None
@@ -150,7 +175,7 @@ class Screen(QWidget):
         layout.addWidget(self.body, 1)
         nav = QHBoxLayout()
         nav.setSpacing(4)
-        for name in ('Estado', 'Copiar', 'Archivos', 'Ajustes'):
+        for name in ('Respaldo', 'Utilidades', 'Ajustes'):
             nav.addWidget(self.button(name, lambda n=name: self.switch(n)))
         layout.addLayout(nav)
         self.setStyleSheet('''
@@ -207,6 +232,8 @@ class Screen(QWidget):
             return
         self.polling = True
         self.wifi_ticks += 1
+        if self.tab == 'Utilidades' and self.setting == 'Monitor' and self.wifi_ticks % 2 == 0:
+            self.refresh_monitor()
         if self.wifi_ticks == 1 or self.wifi_ticks % 5 == 0:
             self.refresh_info()
         if self.setting == 'Wi-Fi' and self.wifi_ticks % 5 == 0:
@@ -231,12 +258,15 @@ class Screen(QWidget):
         if data == self.devices:
             return
         self.devices = data
+        self.sync_selection()
         if self.step == 2 and any(d and d['id'].startswith('auto:') and not any(x['id'] == d['id'] for x in data[g])
                                   for d, g in ((self.source, 'sources'), (self.destination, 'destinations'))):
             self.step = -1
         self.render()
 
     def switch(self, tab):
+        if tab in ('Respaldo', 'Estado'):
+            tab = 'Copiar'
         self.tab, self.page = tab, 0
         self.detail = self.setting = None
         self.error = ''
@@ -283,13 +313,17 @@ class Screen(QWidget):
             self.label('Conectando con el servicio de respaldo…')
         else:
             self.mode.setText('DEMO · no copia archivos' if self.status['demo'] else 'Little Backup Box')
-            if self.tab == 'Estado' or (self.tab == 'Copiar' and
+            if self.status.get('shutting_down'):
+                self.label('Apagando el equipo…\nEsperá a que termine antes de quitar la alimentación.')
+            elif self.tab == 'Estado' or (self.tab == 'Copiar' and
                     (self.status['job']['state'] in ('running', 'cancelling') or self.step == 3)):
                 self.job_view()
             elif self.tab == 'Copiar':
                 self.copy_view()
             elif self.tab == 'Archivos':
                 self.files_view()
+            elif self.tab == 'Utilidades':
+                self.utilities_view()
             else:
                 self.settings_view()
         self.content.addStretch()
@@ -303,7 +337,12 @@ class Screen(QWidget):
 
     def job_view(self):
         job = self.status['job']
-        self.label(job['message'])
+        title = QLabel(job['message'])
+        title.setWordWrap(True)
+        title.setFixedHeight(44)
+        title.setStyleSheet('font-size: 19px; font-weight: bold; color: ' +
+                           ('#79dcc6' if job['state'] == 'success' else '#ff9b8f' if job['state'] in ('error', 'review') else '#edf4fa'))
+        self.content.addWidget(title)
         if job['state'] in ('running', 'cancelling'):
             bar = QProgressBar()
             if job['progress'] is None:
@@ -314,7 +353,8 @@ class Screen(QWidget):
             if job['progress'] is not None:
                 self.label('Progreso de etapa · por archivos')
         else:
-            self.add('Nuevo respaldo', self.new_job)
+            self.row([('Reintentar' if job['state'] in ('error', 'review', 'cancelled') else 'Nuevo respaldo',
+                       self.new_job, True), ('Unidades · retirar', self.new_job, True)])
         metrics = job.get('metrics', {})
         if metrics:
             speed = metrics.get('write_bps')
@@ -349,6 +389,15 @@ class Screen(QWidget):
             self.request('/api/cancel', done, {})
         self.confirm('¿Cancelar el respaldo? Los archivos ya copiados se conservan; puede quedar un archivo incompleto. Esperá la confirmación antes de retirar los dispositivos.', 'Cancelar respaldo', stop)
 
+    def shutdown(self):
+        def poweroff():
+            def done(data):
+                self.status = data
+                self.timer.stop()
+                self.render()
+            self.request('/api/shutdown', done, {})
+        self.confirm('¿Apagar la Raspberry Pi? Se cerrarán los servicios y se desmontarán los discos. Esperá a que se apague antes de quitar la alimentación.', 'Apagar equipo', poweroff)
+
     def remove_device(self, device):
         def remove():
             self.pending = True
@@ -372,6 +421,7 @@ class Screen(QWidget):
     def new_job(self):
         self.tab, self.step, self.page = 'Copiar', -1, 0
         self.source = self.destination = None
+        self.sync_selection()
         self.render()
 
     def choose(self, device):
@@ -379,30 +429,56 @@ class Screen(QWidget):
             self.source = device
         else:
             self.destination = device
-        self.step += 1
+        self.step = -1
         self.page = 0
         self.render()
 
     def copy_view(self):
         if self.step == -1:
-            auto = self.devices.get('automatic', {})
-            self.source = next((d for d in self.devices['sources'] if d['id'] == auto.get('source')), None)
-            self.destination = next((d for d in self.devices['destinations'] if d['id'] == auto.get('destination')), None)
-            self.label('Backup · conectar SD y disco USB')
-            self.label('Origen: ' + (self.source['label'] if self.source else 'sin detectar') + '\nDestino: ' +
-                       (self.destination['label'] if self.destination else 'sin detectar'))
-            self.row([
-                ('Seleccionar manual', self.manual_copy, True),
-                ('Simular' if self.status['demo'] else 'Backup', self.start_job,
-                 bool(self.source and self.destination) and not self.pending),
-            ])
-            self.label(self.devices.get('detection_error', 'Elegí manualmente si no se detecta la tarjeta.'))
+            self.sync_selection()
+            units = QHBoxLayout()
+            units.setSpacing(8)
+            for role, device in ((0, self.source), (1, self.destination)):
+                panel = QWidget()
+                column = QVBoxLayout(panel)
+                column.setContentsMargins(4, 0, 4, 0)
+                column.setSpacing(3)
+                top = QHBoxLayout()
+                top.addWidget(StorageIcon(role == 0), 1)
+                eject = self.button('⏏', lambda d=device: self.remove_device(d))
+                eject.setFixedWidth(48)
+                eject.setAccessibleName('Retirar ' + ('origen' if role == 0 else 'destino'))
+                eject.setEnabled(bool(device and device.get('disk')) and not self.pending
+                                 and not self.status.get('removing') and not self.status['demo'])
+                top.addWidget(eject)
+                column.addLayout(top)
+                column.addWidget(QLabel('ORIGEN' if role == 0 else 'DESTINO'))
+                choose = self.button((device.get('name') or device['label']) if device else 'Conectar unidad',
+                                     lambda r=role: self.select_role(r))
+                column.addWidget(choose)
+                capacity = QLabel(('Usado ' + space(device.get('used_bytes')) + '\nLibre ' + space(device.get('free_bytes')))
+                                  if device else 'Usado —\nLibre —')
+                capacity.setFixedHeight(38)
+                capacity.setStyleSheet('font-size: 13px')
+                column.addWidget(capacity)
+                units.addWidget(panel, 1)
+            self.content.addLayout(units)
+            start = self.button('Simular respaldo' if self.status['demo'] else 'Iniciar respaldo', self.start_job)
+            valid = bool(self.source and self.destination and self.source['id'] != self.destination['id'])
+            valid = valid and not (self.source.get('disk') and self.source.get('disk') == self.destination.get('disk')) if valid else False
+            start.setEnabled(valid and not self.pending and not self.status.get('removing'))
+            start.setStyleSheet('background: #21776b; font-weight: bold')
+            self.content.addWidget(start)
+            message = 'Retirando unidad…' if self.pending else self.status.get('removal', {}).get('message', '')
+            if message:
+                self.label(message)
             return
         self.label(('1 · Elegir origen', '2 · Elegir destino', '3 · Confirmar')[self.step])
         if self.step < 2:
             group = 'sources' if self.step == 0 else 'destinations'
             devices = [d for d in self.devices[group]
-                       if self.step == 0 or d['id'] != self.source['id']]
+                       if d.get('available') is not False and
+                       (self.step == 0 or not self.source or d['id'] != self.source['id'])]
             pages = max(1, (len(devices) + 1) // 2)
             self.page = min(self.page, pages - 1)
             for device in devices[self.page * 2:self.page * 2 + 2]:
@@ -410,7 +486,7 @@ class Screen(QWidget):
             if not devices:
                 self.label('No hay perfiles disponibles.')
             self.row([
-                ('Volver', lambda: self.back_step(), self.step > 0),
+                ('Volver', self.new_job, True),
                 ('Anterior', lambda: self.change_page(-1), self.page > 0),
                 ('Siguiente', lambda: self.change_page(1), self.page < pages - 1),
             ])
@@ -431,6 +507,53 @@ class Screen(QWidget):
         self.step, self.page = 0, 0
         self.render()
 
+    def sync_selection(self):
+        auto = self.devices.get('automatic', {})
+        for attr, group, key in (('source', 'sources', 'source'), ('destination', 'destinations', 'destination')):
+            old = getattr(self, attr)
+            options = [d for d in self.devices[group] if d.get('available') is not False]
+            selected = next((d for d in options if old and d['id'] == old['id']), None)
+            selected = selected or next((d for d in options if d['id'] == auto.get(key)), None)
+            setattr(self, attr, selected)
+
+    def select_role(self, role):
+        self.step, self.page = role, 0
+        self.render()
+
+    def utilities_view(self):
+        if self.setting == 'Monitor':
+            cpu = self.monitor.get('cpu_percent')
+            temp = self.monitor.get('temperature_c')
+            mem = self.monitor.get('memory', {})
+            self.label('CPU: ' + (f'{cpu:.1f}%' if cpu is not None else 'Midiendo…') +
+                       (' · ' + f'{temp:.1f} °C' if temp is not None else ''))
+            self.label('Memoria: ' + space(mem.get('used_bytes')) + ' / ' + space(mem.get('total_bytes')))
+            devices = self.removable_devices()
+            pages = max(1, (len(devices) + 1) // 2)
+            self.page = min(self.page, pages - 1)
+            for device in devices[self.page * 2:self.page * 2 + 2]:
+                self.label((device.get('name') or device['label']) + ' · ' + space(device.get('capacity_bytes')) +
+                           '\nUsado ' + space(device.get('used_bytes')) + ' · Libre ' + space(device.get('free_bytes')))
+            self.row([('Volver', lambda: self.switch('Utilidades'), True),
+                      ('Anterior', lambda: self.change_page(-1), self.page > 0),
+                      ('Siguiente', lambda: self.change_page(1), self.page < pages - 1)])
+        else:
+            self.label('Utilidades')
+            self.add('Archivos', lambda: self.switch('Archivos'))
+            self.add('Monitor del sistema', self.open_monitor)
+
+    def open_monitor(self):
+        self.setting, self.page = 'Monitor', 0
+        self.refresh_monitor()
+        self.render()
+
+    def refresh_monitor(self):
+        def done(data):
+            self.monitor = data
+            if self.tab == 'Utilidades' and self.setting == 'Monitor':
+                self.render()
+        self.request('/api/monitor', done)
+
     def change_page(self, delta):
         self.page += delta
         if self.tab == 'Archivos':
@@ -439,7 +562,7 @@ class Screen(QWidget):
             self.render()
 
     def start_job(self):
-        if self.pending:
+        if self.pending or not self.source or not self.destination:
             return
         self.pending = True
         self.render()
@@ -501,6 +624,7 @@ class Screen(QWidget):
             ('Anterior', lambda: self.change_page(-1), self.page > 0),
             ('Siguiente', lambda: self.change_page(1), self.page < self.files['pages'] - 1),
         ])
+        self.add('Utilidades', lambda: self.switch('Utilidades'))
 
     def settings_view(self):
         self.label(self.setting or 'Ajustes')
@@ -509,6 +633,8 @@ class Screen(QWidget):
                       ('Copia', lambda: self.show_setting('Copia'), True)])
             self.row([('Wi-Fi', lambda: self.show_setting('Wi-Fi'), True),
                       ('Sistema', lambda: self.show_setting('Sistema'), True)])
+            self.row([('Apagar', self.shutdown, not self.status['demo'] and not self.pending
+                       and not self.status.get('removing') and self.status['job']['state'] not in ('running', 'cancelling'))])
         else:
             if self.setting == 'Info':
                 self.label('Dispositivo: ' + self.info.get('hostname', 'Consultando…'))

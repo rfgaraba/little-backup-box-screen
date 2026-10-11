@@ -6,7 +6,7 @@ from pathlib import Path
 import subprocess
 import threading
 import time
-from hardware import discover, Wifi, network_info, remove_device
+from hardware import discover, Wifi, network_info, remove_device, SystemMonitor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
 from telemetry import BackupTelemetry
@@ -15,6 +15,23 @@ from process_control import stop_group
 ROOT = Path(__file__).resolve().parent
 SOURCE_TYPES = {'camera', 'anyusb', 'usb', 'internal', 'nvme'}
 TARGET_TYPES = {'usb', 'internal', 'nvme'}
+
+
+def backup_result(code, diagnostic):
+    import re
+    normalized = ' '.join(diagnostic.lower().split())
+    if 'invalid mode combination' in normalized:
+        return {'state': 'error', 'progress': None, 'message': 'No se copió: combinación de origen y destino inválida'}
+    if code != 0:
+        return {'state': 'error', 'progress': None, 'message': 'Falló el respaldo · podés reintentar'}
+    summaries = list(re.finditer(r'backup complete\.\s*(\d+) of (\d+) files copied', diagnostic, re.I))
+    if summaries:
+        summary = summaries[-1]
+        copied, expected = map(int, summary.groups())
+        if copied >= expected:
+            return {'state': 'success', 'progress': 100, 'message': 'Copia completada con éxito'}
+        return {'state': 'error', 'progress': None, 'message': 'Respaldo incompleto · podés reintentar'}
+    return {'state': 'review', 'progress': None, 'message': 'No se pudo confirmar el resultado · revisar registro'}
 
 
 def command(config, source, target, checksum):
@@ -46,12 +63,19 @@ class Engine:
         self.removing = False
         self.removal = {}
         self.cleanup_failed = False
+        self.monitor = SystemMonitor()
+        self.shutting_down = False
 
     def devices(self):
+        # Serializes read-only capacity probes against starting a job or removal.
+        with self.lock:
+            return self._devices()
+
+    def _devices(self):
         if self.config:
             profiles = {k: [dict(d) for d in self.config.get(k, [])] for k in ('sources', 'destinations')}
             try:
-                found = discover()
+                found = discover(probe=self.job['state'] not in ('running', 'cancelling') and not self.removing and not self.shutting_down)
                 configured_cards = {d.get('preset') for d in profiles['sources'] if d.get('engine') == 'anyusb' and d.get('preset')}
                 for d in found['sources']:
                     if d.get('preset') in configured_cards:
@@ -66,6 +90,7 @@ class Engine:
                 physical = {d['preset']: d['disk'] for d in found['sources']}
                 for group in profiles:
                     for d in profiles[group]:
+                        d['available'] = not d.get('preset') or d.get('preset') in physical
                         if d.get('preset') in physical:
                             d['disk'] = physical[d['preset']]
                     presets = {d.get('preset') for d in found[group]}
@@ -74,12 +99,31 @@ class Engine:
             except (OSError, ValueError, subprocess.SubprocessError):
                 return dict(profiles, automatic={}, detection_error='Detección no disponible; seleccioná manualmente')
         return {'sources': [{'id': 'card', 'label': 'Tarjeta SD · ejemplo'}, {'id': 'camera', 'label': 'Cámara USB · ejemplo'}, {'id': 'usb', 'label': 'Memoria USB · ejemplo'}],
-                'destinations': [{'id': 'ssd', 'label': 'SSD principal · ejemplo'}, {'id': 'disk', 'label': 'Disco USB · ejemplo'}]}
+                'destinations': [{'id': 'ssd', 'label': 'SSD principal · ejemplo'}, {'id': 'disk', 'label': 'Disco USB · ejemplo'}],
+                'automatic': {'source': 'card', 'destination': 'ssd'}}
 
     def status(self):
         with self.lock:
             return {'demo': self.config is None, 'job': dict(self.job), 'checksum': self.checksum,
-                    'removing': self.removing, 'removal': dict(self.removal)}
+                    'removing': self.removing, 'removal': dict(self.removal), 'shutting_down': self.shutting_down}
+
+    def shutdown(self):
+        with self.lock:
+            if not self.config:
+                raise ValueError('Apagar no está disponible en demo')
+            if self.job['state'] in ('running', 'cancelling') or self.cleanup_failed or self.removing:
+                raise ValueError('Esperá a que termine el respaldo o la retirada antes de apagar')
+            if self.shutting_down:
+                raise ValueError('El equipo ya se está apagando')
+            self.shutting_down = True
+        try:
+            # systemd stops services and flushes/unmounts filesystems before poweroff.
+            subprocess.run(['systemctl', 'poweroff', '--no-block'], check=True,
+                           capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError) as exc:
+            with self.lock:
+                self.shutting_down = False
+            raise ValueError('No se pudo apagar el equipo') from exc
 
     def cancel(self):
         with self.lock:
@@ -90,6 +134,8 @@ class Engine:
 
     def remove(self, identifier):
         with self.lock:
+            if self.shutting_down:
+                raise ValueError('El equipo se está apagando')
             if self.job['state'] in ('running', 'cancelling') or self.cleanup_failed:
                 raise ValueError('Primero esperá a que termine o se cancele el respaldo')
             if self.removing:
@@ -114,15 +160,20 @@ class Engine:
                for key, group in [('source', 'sources'), ('destination', 'destinations')]):
             raise ValueError('Selección no válida')
         with self.lock:
+            if self.shutting_down:
+                raise ValueError('El equipo se está apagando')
             if self.job['state'] in ('running', 'cancelling') or self.cleanup_failed:
                 raise ValueError('Ya hay un respaldo en curso')
             if self.removing:
                 raise ValueError('Esperá a que se retire el dispositivo')
             self.cancel_requested.clear()
+            self.removal = {}
             argv = None
             if self.config:
                 source = next(d for d in devices['sources'] if d['id'] == data['source'])
                 target = next(d for d in devices['destinations'] if d['id'] == data['destination'])
+                if source.get('available') is False or target.get('available') is False:
+                    raise ValueError('Conectá el origen y el destino antes de iniciar')
                 if source.get('disk') and source.get('disk') == target.get('disk'):
                     raise ValueError('Origen y destino pertenecen al mismo disco')
                 argv = command(self.config, source, target, self.checksum)
@@ -204,11 +255,7 @@ class Engine:
                     except OSError:
                         pass
                 # Upstream can exit 0 despite backup errors; never equate this with verified success.
-                result = {'state': 'review' if code == 0 else 'error', 'progress': None,
-                          'message': 'Motor finalizado · revisar registro del respaldo' if code == 0 else f'El motor terminó con error ({code})'}
-                if 'invalid mode combination' in ' '.join(diagnostic.lower().split()):
-                    result = {'state': 'error', 'progress': None,
-                              'message': 'No se copió: el motor rechazó la combinación de origen y destino.'}
+                result = backup_result(code, diagnostic)
         except Exception:
             result = {'state': 'error', 'progress': None, 'message': 'No se pudo ejecutar el motor · revisar configuración'}
         with self.lock:
@@ -217,7 +264,12 @@ class Engine:
                           'message': 'No se confirmó la detención. No retires los dispositivos.' if self.cleanup_failed else
                           'Respaldo cancelado · pueden quedar archivos incompletos'}
             if self.job.get('metrics'):
-                result['metrics'] = self.job['metrics']
+                result['metrics'] = dict(self.job['metrics'])
+                if result['state'] not in ('running', 'cancelling'):
+                    result['metrics']['eta'] = None
+                if result['state'] == 'success':
+                    result['metrics'].pop('files_processed', None)
+                    result['metrics'].pop('files_total', None)
             self.job = result
 
     def files(self, relative, page):
@@ -255,6 +307,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(self.server.engine.status())
             if url.path == '/api/info':
                 return self.reply(network_info())
+            if url.path == '/api/monitor':
+                return self.reply(self.server.engine.monitor.sample())
             if url.path == '/api/devices':
                 return self.reply(self.server.engine.devices())
             if url.path == '/api/wifi':
@@ -291,6 +345,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.server.engine.start(data)
             elif self.path == '/api/cancel':
                 self.server.engine.cancel()
+            elif self.path == '/api/shutdown':
+                self.server.engine.shutdown()
             elif self.path == '/api/remove':
                 if not isinstance(data.get('device'), str):
                     raise ValueError('Indicá el dispositivo que querés retirar')

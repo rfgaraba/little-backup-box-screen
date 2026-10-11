@@ -68,6 +68,7 @@ class NativeUITests(unittest.TestCase):
             screen.manual_copy()
             screen.choose(screen.devices['sources'][0])
             self.assert_layout(screen)
+            screen.select_role(1)
             screen.choose(screen.devices['destinations'][0])
             self.assert_layout(screen)
             screen.start_job()
@@ -154,6 +155,14 @@ class NativeUITests(unittest.TestCase):
             screen.switch('Estado')
             self.assert_layout(screen)
             self.assertFalse(screen.grab().isNull())
+            screen.switch('Utilidades')
+            screen.open_monitor()
+            self.assert_layout(screen)
+            screen.status['job'] = {'state': 'success', 'progress': 100,
+                                    'message': 'Copia completada con éxito'}
+            screen.step = 3
+            screen.switch('Respaldo')
+            self.assert_layout(screen)
         finally:
             screen.timer.stop()
             screen.close()

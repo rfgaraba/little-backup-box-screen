@@ -1,6 +1,8 @@
 # Little Backup Box · pantalla táctil
 
-Interfaz en español para una pantalla horizontal de **480 × 320**, con cuatro pestañas fijas: Estado, Copiar, Archivos y Ajustes. Botones de al menos 48 px, listas de dos elementos por página y inicio en Backup con detección automática y selección manual Origen → Destino → Confirmar → Progreso → Resultado. Ninguna vista necesita desplazamiento.
+Interfaz en español para una pantalla horizontal de **480 × 320**, con tres pestañas: Respaldo, Utilidades y Ajustes. Respaldo es la pantalla inicial: muestra origen y destino precargados, sus iconos, espacio usado y libre y retirada segura con ⏏. Tocar el nombre permite cambiar la unidad. Iniciar respaldo solo se habilita con dos unidades distintas disponibles. Utilidades contiene Archivos y un monitor de CPU, temperatura, memoria y capacidad de los dispositivos. Botones de al menos 48 px y listas paginadas; ninguna vista necesita desplazamiento.
+
+Durante la copia se muestran progreso, escritura, tiempo y archivos. Una pasada sin archivos pendientes aparece como Verificando respaldo, con barra indeterminada. El resultado solo confirma Copia completada con éxito si el motor devuelve un resumen final de respaldo completo y termina sin error; los resultados incompletos o desconocidos permiten volver a seleccionar las unidades y reintentar. Las estadísticas previas de unidades desmontadas se consultan con un montaje temporal de solo lectura, sin hacerlo durante un respaldo ni una retirada; si no pueden leerse, se muestran como —.
 
 ## Instalación directa desde el repositorio
 

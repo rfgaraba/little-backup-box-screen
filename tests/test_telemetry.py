@@ -16,6 +16,11 @@ class TelemetryTests(unittest.TestCase):
     def test_unknown_total_does_not_show_misleading_percentage(self):
         self.assertIsNone(parse_progress('s=hc:25 de 100+, 12MB/s\nPGBAR=25')['progress'])
 
+    def test_zero_pending_files_is_verification_not_zero_percent(self):
+        data = parse_progress('0 of 0\nPGBAR=0.0')
+        self.assertIsNone(data['progress'])
+        self.assertEqual(data['phase'], 'Verificando respaldo')
+
     def test_disk_write_speed_uses_counter_delta_and_elapsed_time(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(BackupTelemetry, 'disk_bytes', side_effect=[1000, 5001000, 5001000]):
             clock = iter([10, 12, 14])
