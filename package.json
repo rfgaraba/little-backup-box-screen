@@ -1,1 +1,1 @@
-{"name":"little-backup-box-screen","private":true,"version":"0.1.0","scripts":{"start":"python server.py","test":"python -m unittest discover -s tests","test:ui":"node tests/ui.cjs"},"devDependencies":{"playwright":"^1.58.0"}}
+{"name":"little-backup-box-screen","private":true,"version":"0.1.0","scripts":{"start":"python server.py","test":"python -m unittest discover -s tests","test:ui":"node tests/ui.cjs","test:connectivity-ui":"node tests/connectivity-ui.cjs"},"devDependencies":{"playwright":"^1.58.0"}}

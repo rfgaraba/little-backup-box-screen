@@ -81,6 +81,26 @@ La matriz real depende de la orientación y la calibración del panel. Para evde
 
 Para previsualizar la interfaz nativa en un equipo con escritorio, instalar PyQt6, iniciar `server.py` y ejecutar `python native.py --windowed`. La interfaz nativa y la instalación sobre el LCD real aún requieren validación en la Raspberry Pi.
 
+## Bluetooth y respaldo remoto
+
+En **Ajustes → Bluetooth** se puede encender/apagar el adaptador, buscar durante 20 segundos, emparejar, confirmar códigos, ingresar PIN, conectar/desconectar y olvidar dispositivos. Poné el otro dispositivo en modo emparejamiento antes de buscar. El icono aparece gris al encender Bluetooth, cambia de color al conectar y desaparece al apagarlo. Los emparejamientos quedan guardados por BlueZ; la reconexión depende del perfil admitido por el dispositivo. Emparejar no instala perfiles de audio ni configura una conexión de Internet compartida.
+
+En **Ajustes → Nube**, elegí una cuenta y activá la subida automática. Se reutilizan `backup.py`, rclone y el archivo de cuentas del motor oficial, consultando su ruta mediante `lib_setup`. Admite Google Drive y los demás proveedores configurables con rclone, incluidos SFTP, WebDAV, Dropbox y OneDrive. La carpeta y las políticas de nube se toman de la configuración oficial de Little Backup Box.
+
+La app ejecuta primero el respaldo local y, únicamente si confirma su éxito, ejecuta otra pasada del mismo motor desde el disco de destino hacia `cloud:NOMBRE`. Conserva el identificador del disco elegido y mantiene desactivados el borrado de origen y el apagado. Durante ambas etapas se bloquean la retirada de discos, otro respaldo y los cambios de configuración remota. Una subida fallida o cancelada conserva el resultado local y permite reintentar el respaldo; el motor vuelve a comparar los archivos existentes. No hay cola persistente ni reintento automático al recuperar Internet o reiniciar el servicio.
+
+Para agregar Google Drive u otro servicio:
+
+1. Usá la configuración del proyecto oficial, o ejecutá `rclone config` en una PC y completá allí la autorización de la cuenta. `rclone config file` muestra dónde quedó `rclone.conf`.
+2. En la interfaz web de esta app, abrí **Ajustes → Nube → Configurar / Importar** y seleccioná ese archivo sin cifrar (hasta 64 KB). Se agregan cuentas nuevas sin reemplazar nombres existentes; no se devuelven tokens por la API. El archivo conserva permisos privados y el propietario del archivo oficial.
+3. Volvé a **Elegir cuenta**. Seleccionarla activa la subida para el próximo respaldo. El ajuste persiste en el directorio de estado del servicio.
+
+El servidor escucha solamente en loopback. Para importar desde otra PC, abrí un túnel SSH, por ejemplo `ssh -L 8080:127.0.0.1:8080 usuario@IP-DE-LA-PI`, y visitá `http://127.0.0.1:8080` en esa PC (adaptá el puerto si instalaste otro). La pantalla nativa permite seleccionar cuentas existentes y explica cómo agregarlas desde la web.
+
+El instalador real comprueba e instala las dependencias faltantes `bluez`, `python3-dbus`, `python3-gi` y `rclone`. El servicio Bluetooth del sistema debe estar disponible y el adaptador sin bloqueo de radio. El modo demo no cambia Bluetooth ni cuentas reales. Se incluyen pruebas con BlueZ y el motor simulados y verificaciones de interfaz a 480 × 320; falta validar emparejamientos y una transferencia de nube con hardware y credenciales reales.
+
+Referencias: [motor oficial](https://github.com/outdoorbits/little-backup-box/blob/main/scripts/backup.py), [BlueZ Agent API](https://github.com/bluez/bluez/blob/master/doc/org.bluez.Agent.rst), [configuración de rclone](https://rclone.org/commands/rclone_config/).
+
 ## Ejecutar en modo demo
 
 Requiere Python 3.10 o posterior; el servidor no necesita dependencias externas.

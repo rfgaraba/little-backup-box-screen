@@ -13,7 +13,7 @@ APP = Path('/opt/little-backup-box-screen')
 ETC = Path('/etc/little-backup-box-screen')
 UNIT = Path('/etc/systemd/system/little-backup-box-screen.service')
 SERVICE = UNIT.name
-FILES = ('server.py', 'hardware.py', 'telemetry.py', 'process_control.py', 'native.py', 'native_install.py', 'tools/display_probe.py', 'tools/display_console.py', 'web/index.html', 'web/app.js', 'web/style.css', 'LICENSE', 'README.md', 'config.example.json')
+FILES = ('server.py', 'hardware.py', 'bluetooth.py', 'remote_backup.py', 'telemetry.py', 'process_control.py', 'native.py', 'native_install.py', 'tools/display_probe.py', 'tools/display_console.py', 'web/index.html', 'web/app.js', 'web/style.css', 'LICENSE', 'README.md', 'config.example.json')
 
 
 def validate_config(config, check_paths=True):
@@ -167,11 +167,31 @@ def ensure_idle(port=8080, target_port=None):
     return True
 
 
+def check_connectivity_dependencies():
+    import native_install
+    def missing():
+        packages = [package for binary, package in [('bluetoothctl', 'bluez'), ('rclone', 'rclone')]
+                    if not shutil.which(binary)]
+        for module, package in [('dbus', 'python3-dbus'), ('gi', 'python3-gi')]:
+            probe = subprocess.run(['/usr/bin/python3', '-c', 'import ' + module],
+                                   capture_output=True, timeout=10)
+            if probe.returncode != 0:
+                packages.append(package)
+        return packages
+    packages = missing()
+    if packages:
+        native_install.install_packages(packages)
+        if missing():
+            raise ValueError('No se pudieron comprobar las dependencias de Bluetooth y nube')
+
+
 def install(mode, config, display='web', framebuffer=None, port=8080):
     validate_port(port)
     import native_install
     if display == 'native':
         native_install.check_dependencies(framebuffer, install_missing=True)
+    if mode == 'real':
+        check_connectivity_dependencies()
     if mode == 'real' and not shutil.which('lsblk'):
         native_install.install_packages(['util-linux'])
         if not shutil.which('lsblk'):
@@ -269,7 +289,7 @@ def main():
         if args.dry_run:
             print('Al instalar se comprobarán las dependencias y apt instalará las faltantes: '
                   + ', '.join((['python3-pyqt6'] if display == 'native' else [])
-                              + (['util-linux (lsblk)', 'udisks2 (retirada segura)'] if mode == 'real' else [])))
+                              + (['util-linux (lsblk)', 'udisks2 (retirada segura)', 'bluez', 'python3-dbus', 'python3-gi', 'rclone'] if mode == 'real' else [])))
             print('\nNo se modificó el sistema. Las rutas del motor se comprobarán al instalar.\n')
             print(service_text(mode, port))
             if display == 'native':

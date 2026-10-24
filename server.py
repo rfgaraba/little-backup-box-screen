@@ -11,6 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs
 from telemetry import BackupTelemetry
 from process_control import stop_group
+from bluetooth import Bluetooth
+from remote_backup import RemoteBackup
 
 ROOT = Path(__file__).resolve().parent
 SOURCE_TYPES = {'camera', 'anyusb', 'usb', 'internal', 'nvme'}
@@ -34,8 +36,9 @@ def backup_result(code, diagnostic):
     return {'state': 'review', 'progress': None, 'message': 'No se pudo confirmar el resultado · revisar registro'}
 
 
-def command(config, source, target, checksum):
-    if source['engine'] not in SOURCE_TYPES or target['engine'] not in TARGET_TYPES:
+def command(config, source, target, checksum, allow_cloud=False):
+    cloud = allow_cloud and target['engine'].startswith('cloud:')
+    if source['engine'] not in SOURCE_TYPES or (target['engine'] not in TARGET_TYPES and not cloud):
         raise ValueError('Tipo de almacenamiento no admitido')
     if source['id'] == target['id'] or (source.get('preset') and source.get('preset') == target.get('preset')):
         raise ValueError('Origen y destino deben ser distintos')
@@ -58,6 +61,8 @@ class Engine:
         self.job = {'state': 'idle', 'progress': None, 'message': 'Listo para respaldar'}
         self.checksum = True
         self.wifi = Wifi()
+        self.bluetooth = Bluetooth(enabled=bool(config))
+        self.remote = RemoteBackup(config)
         self.target_disk = None
         self.cancel_requested = threading.Event()
         self.removing = False
@@ -169,6 +174,7 @@ class Engine:
             self.cancel_requested.clear()
             self.removal = {}
             argv = None
+            remote_argv = None
             if self.config:
                 source = next(d for d in devices['sources'] if d['id'] == data['source'])
                 target = next(d for d in devices['destinations'] if d['id'] == data['destination'])
@@ -177,14 +183,24 @@ class Engine:
                 if source.get('disk') and source.get('disk') == target.get('disk'):
                     raise ValueError('Origen y destino pertenecen al mismo disco')
                 argv = command(self.config, source, target, self.checksum)
+                remote_argv = self.remote.command(target, self.checksum)
                 self.target_disk = target.get('disk')
                 if not (Path(self.config['engine_dir']) / 'backup.py').is_file():
                     raise ValueError('No se encontró backup.py en la instalación configurada')
             self.job = {'state': 'running', 'progress': 0 if not argv else None,
                         'message': 'Simulación en curso' if not argv else 'Preparando respaldo'}
-        threading.Thread(target=self.run, args=(argv,), daemon=True).start()
+        threading.Thread(target=self.run, args=(argv, remote_argv), daemon=True).start()
 
-    def run(self, argv):
+    def configure_remote(self, data):
+        with self.lock:
+            if self.job['state'] in ('running', 'cancelling') or self.removing or self.shutting_down or self.cleanup_failed:
+                raise ValueError('Esperá a que termine el respaldo o la retirada para configurar la nube')
+            if data.get('action') == 'import':
+                self.remote.import_config(data.get('config'))
+            else:
+                self.remote.save(data)
+
+    def _run_phase(self, argv, remote=False):
         try:
             if argv is None:
                 for progress in range(10, 101, 10):
@@ -199,14 +215,14 @@ class Engine:
                 runtime.mkdir(exist_ok=True)
                 upstream_log = Path(self.config['engine_dir']) / 'tmp/little-backup-box.log'
                 offset = upstream_log.stat().st_size if upstream_log.exists() else 0
-                with (runtime / 'engine.log').open('w', encoding='utf-8') as log:
+                with (runtime / 'engine.log').open('a' if remote else 'w', encoding='utf-8') as log:
                     log.write('Ejecutando respaldo\n' + json.dumps(argv, ensure_ascii=False) + '\n')
                     log.flush()
                     if self.cancel_requested.is_set():
                         raise InterruptedError('Cancelado antes de iniciar el motor')
                     process = subprocess.Popen(argv, cwd=self.config['engine_dir'], stdout=log,
                                                stderr=log, shell=False, start_new_session=True)
-                    tracker = BackupTelemetry(self.config['engine_dir'], self.target_disk, offset)
+                    tracker = BackupTelemetry(self.config['engine_dir'], None if remote else self.target_disk, offset)
                     stop = threading.Event()
                     def monitor():
                         while not stop.wait(2):
@@ -258,11 +274,34 @@ class Engine:
                 result = backup_result(code, diagnostic)
         except Exception:
             result = {'state': 'error', 'progress': None, 'message': 'No se pudo ejecutar el motor · revisar configuración'}
+        return result
+
+    def run(self, argv, remote_argv=None):
+        result = self._run_phase(argv)
+        local_result = dict(result)
+        if remote_argv and result['state'] == 'success' and not self.cancel_requested.is_set():
+            with self.lock:
+                self.job = {'state': 'running', 'phase': 'remote', 'progress': None,
+                            'message': 'Copia local completa · subiendo a la nube'}
+            result = self._run_phase(remote_argv, remote=True)
+            result['local_success'] = True
+            result['phase'] = 'remote'
+            result['message'] = ('Copia local y respaldo remoto completados' if result['state'] == 'success' else
+                                 'Copia local completa · no se confirmó el respaldo remoto; revisá el registro')
+        elif remote_argv:
+            result['remote_skipped'] = True
+        if remote_argv:
+            result['local_success'] = local_result['state'] == 'success'
         with self.lock:
             if self.cancel_requested.is_set():
+                local_success = result.get('local_success', False)
                 result = {'state': 'cancelling' if self.cleanup_failed else 'cancelled', 'progress': None,
                           'message': 'No se confirmó la detención. No retires los dispositivos.' if self.cleanup_failed else
                           'Respaldo cancelado · pueden quedar archivos incompletos'}
+                if local_success:
+                    result['local_success'] = True
+                    if not self.cleanup_failed:
+                        result['message'] = 'Copia local completa · subida cancelada'
             if self.job.get('metrics'):
                 result['metrics'] = dict(self.job['metrics'])
                 if result['state'] not in ('running', 'cancelling'):
@@ -314,6 +353,10 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == '/api/wifi':
                 return self.reply(self.server.engine.wifi.status() if self.server.engine.config else
                                   {'available': False, 'message': 'Wi-Fi no se modifica en modo demo'})
+            if url.path == '/api/bluetooth':
+                return self.reply(self.server.engine.bluetooth.status())
+            if url.path == '/api/remote':
+                return self.reply(self.server.engine.remote.status())
             if url.path == '/api/files':
                 query = parse_qs(url.query)
                 return self.reply(self.server.engine.files(query.get('path', [''])[0], int(query.get('page', ['0'])[0])))
@@ -336,7 +379,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply({'error': 'Solicitud no permitida'}, 403)
         try:
             length = int(self.headers.get('Content-Length', '0'))
-            if length < 1 or length > 4096:
+            if length < 1 or length > (131072 if self.path == '/api/remote' else 4096):
                 raise ValueError('Solicitud no válida')
             data = json.loads(self.rfile.read(length))
             if not isinstance(data, dict):
@@ -355,6 +398,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not self.server.engine.config:
                     raise ValueError('Wi-Fi no se modifica en modo demo')
                 self.server.engine.wifi.apply(data)
+            elif self.path == '/api/bluetooth':
+                self.server.engine.bluetooth.apply(data)
+            elif self.path == '/api/remote':
+                self.server.engine.configure_remote(data)
             elif self.path == '/api/settings':
                 if not isinstance(data.get('checksum'), bool):
                     raise ValueError('Ajuste no válido')
@@ -365,6 +412,8 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(self.server.engine.status())
         except (ValueError, KeyError) as exc:
             self.reply({'error': str(exc)}, 400)
+        except OSError:
+            self.reply({'error': 'No se pudo guardar la configuración; revisá los permisos y el espacio disponible'}, 400)
 
 
 if __name__ == '__main__':

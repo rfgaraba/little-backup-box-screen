@@ -15,6 +15,32 @@ from PyQt6.QtWidgets import (
 BASE = 'http://127.0.0.1:8080'
 
 
+class BluetoothIndicator(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setFixedSize(22, 20)
+        self.connected = False
+        self.hide()
+
+    def set_state(self, state):
+        self.connected = bool(state.get('connected'))
+        self.setVisible(bool(state.get('powered')))
+        self.setAccessibleName('Bluetooth conectado' if self.connected else 'Bluetooth encendido')
+        self.setToolTip(self.accessibleName())
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor('#79dcc6' if self.connected else '#53718d'), 2))
+        for x1, y1, x2, y2 in [(10, 1, 10, 19), (10, 1, 17, 6), (17, 6, 4, 15),
+                                (4, 5, 17, 14), (17, 14, 10, 19)]:
+            painter.drawLine(x1, y1, x2, y2)
+        if self.connected:
+            painter.drawPoint(2, 10)
+            painter.drawPoint(20, 10)
+
+
 class WifiIndicator(QWidget):
     def __init__(self):
         super().__init__()
@@ -74,6 +100,7 @@ class TouchKeyboard(QDialog):
                               ('Otros', self.next_page), ('Cancelar', self.reject), ('Aceptar', self.accept)]:
             b = QPushButton(label)
             b.setFixedHeight(48)
+            b.setMinimumWidth(48)
             b.clicked.connect(lambda checked=False, a=action: a())
             row.addWidget(b)
         layout.addLayout(row)
@@ -86,6 +113,7 @@ class TouchKeyboard(QDialog):
             char = self.pages[self.page][i:i + 1]
             b = QPushButton(char)
             b.setFixedHeight(48)
+            b.setMinimumWidth(48)
             b.setEnabled(bool(char))
             b.clicked.connect(lambda checked=False, c=char: self.field.insert(c))
             self.keys.addWidget(b, i // 9, i % 9)
@@ -147,6 +175,9 @@ class Screen(QWidget):
         self.devices = {'sources': [], 'destinations': []}
         self.tab, self.step, self.page = 'Copiar', -1, 0
         self.wifi = {}
+        self.bluetooth, self.remote = {}, {}
+        self.bt_device = None
+        self.bt_pending = self.bt_polling = False
         self.info = {}
         self.monitor = {}
         self.info_pending = False
@@ -166,6 +197,8 @@ class Screen(QWidget):
         header = QHBoxLayout()
         header.addWidget(self.mode, 1)
         self.wifi_indicator = WifiIndicator()
+        self.bluetooth_indicator = BluetoothIndicator()
+        header.addWidget(self.bluetooth_indicator)
         header.addWidget(self.wifi_indicator)
         layout.addLayout(header)
         self.body = QWidget()
@@ -202,7 +235,7 @@ class Screen(QWidget):
 
     def request(self, path, callback, data=None, failure=None):
         request = QNetworkRequest(QUrl(BASE + path))
-        request.setTransferTimeout(90000 if path == '/api/remove' else 60000 if path == '/api/wifi' else 5000)
+        request.setTransferTimeout(90000 if path == '/api/remove' else 60000 if path in ('/api/wifi', '/api/bluetooth', '/api/remote') else 5000)
         if data is None:
             reply = self.network.get(request)
         else:
@@ -232,6 +265,8 @@ class Screen(QWidget):
             return
         self.polling = True
         self.wifi_ticks += 1
+        if self.wifi_ticks == 1 or self.wifi_ticks % (2 if self.setting == 'Bluetooth' else 5) == 0:
+            self.refresh_bluetooth()
         if self.tab == 'Utilidades' and self.setting == 'Monitor' and self.wifi_ticks % 2 == 0:
             self.refresh_monitor()
         if self.wifi_ticks == 1 or self.wifi_ticks % 5 == 0:
@@ -632,9 +667,9 @@ class Screen(QWidget):
             self.row([('Info', lambda: self.show_setting('Info'), True),
                       ('Copia', lambda: self.show_setting('Copia'), True)])
             self.row([('Wi-Fi', lambda: self.show_setting('Wi-Fi'), True),
+                      ('Bluetooth', lambda: self.show_setting('Bluetooth'), True)])
+            self.row([('Nube', lambda: self.show_setting('Nube'), True),
                       ('Sistema', lambda: self.show_setting('Sistema'), True)])
-            self.row([('Apagar', self.shutdown, not self.status['demo'] and not self.pending
-                       and not self.status.get('removing') and self.status['job']['state'] not in ('running', 'cancelling'))])
         else:
             if self.setting == 'Info':
                 self.label('Dispositivo: ' + self.info.get('hostname', 'Consultando…'))
@@ -655,6 +690,12 @@ class Screen(QWidget):
                     self.row([('Volver a Wi-Fi' if self.wifi.get('forced') else 'Conectar red',
                                self.resume_wifi if self.wifi.get('forced') else self.connect_wifi, True),
                               ('Hotspot', self.hotspot_wifi, not self.wifi.get('forced'))])
+            elif self.setting == 'Bluetooth':
+                self.bluetooth_view()
+                return
+            elif self.setting in ('Nube', 'Cuentas', 'Configurar nube'):
+                self.remote_view()
+                return
             elif self.setting == 'Pantalla':
                 self.label('480 × 320 · pantalla SPI\nInterfaz nativa Qt · sin escritorio')
             elif self.setting == 'Dispositivos':
@@ -678,11 +719,21 @@ class Screen(QWidget):
             else:
                 self.label('DEMO' if self.status['demo'] else 'Little Backup Box · motor CLI')
                 self.add('Retirar dispositivos', lambda: self.show_setting('Dispositivos'))
+                self.row([('Apagar', self.shutdown, not self.status['demo'] and not self.pending
+                           and not self.status.get('removing') and self.status['job']['state'] not in ('running', 'cancelling'))])
             self.add('Volver', lambda: self.show_setting(None))
 
     def show_setting(self, name):
         self.setting = name
         self.page = 0
+        self.bt_device = None
+        if name == 'Bluetooth':
+            self.refresh_bluetooth()
+        if name == 'Nube':
+            def remote_done(data):
+                self.remote = data
+                self.render()
+            self.request('/api/remote', remote_done)
         if name == 'Info':
             self.refresh_info()
         if name == 'Wi-Fi':
@@ -691,6 +742,121 @@ class Screen(QWidget):
                 self.render()
             self.request('/api/wifi', done)
         self.render()
+
+    def refresh_bluetooth(self):
+        if self.bt_polling:
+            return
+        self.bt_polling = True
+        def done(data):
+            self.bt_polling = False
+            changed = data != self.bluetooth
+            self.bluetooth = data
+            self.bluetooth_indicator.set_state(data)
+            if changed and self.setting == 'Bluetooth':
+                self.render()
+        def failed():
+            self.bt_polling = False
+            self.bluetooth_indicator.set_state({})
+        self.request('/api/bluetooth', done, failure=failed)
+
+    def bluetooth_action(self, action, **values):
+        if self.bt_pending:
+            return
+        self.bt_pending = True
+        self.render()
+        def done(_):
+            self.bt_pending = False
+            self.refresh_bluetooth()
+            self.render()
+        self.request('/api/bluetooth', done, dict(action=action, **values),
+                     failure=lambda: setattr(self, 'bt_pending', False))
+
+    def bluetooth_view(self):
+        bt = self.bluetooth
+        available = bt.get('available', False) and not self.bt_pending
+        prompt = bt.get('prompt')
+        if prompt:
+            device = next((d['name'] for d in bt.get('devices', []) if d['id'] == prompt['device']), 'Dispositivo Bluetooth')
+            self.label(device)
+            self.label(('Ingresá en el otro dispositivo: ' if prompt['kind'] == 'display' else 'Código: ') + prompt.get('code', ''))
+            if prompt['kind'] != 'display':
+                def respond(accept):
+                    value, ok = ('', True)
+                    if accept and prompt['kind'] in ('pin', 'passkey'):
+                        value, ok = TouchKeyboard.read('PIN Bluetooth' if prompt['kind'] == 'pin' else 'Código de hasta 6 dígitos', self)
+                    if ok:
+                        self.bluetooth_action('respond', prompt=prompt['id'], accept=accept, value=value)
+                self.row([('Aceptar' if prompt['kind'] in ('confirm', 'authorize') else 'Ingresar PIN', lambda: respond(True), available),
+                          ('Rechazar', lambda: respond(False), available)])
+            elif bt.get('pairing'):
+                self.add('Cancelar', lambda: self.bluetooth_action('cancel', device=bt['pairing']))
+        elif self.bt_device:
+            device = next((d for d in bt.get('devices', []) if d['id'] == self.bt_device), None)
+            if device:
+                self.label(device['name'] + '\n' + (bt.get('message') or device['address']))
+                action = 'disconnect' if device['connected'] else 'connect' if device['paired'] else 'pair'
+                self.row([({'pair': 'Emparejar', 'connect': 'Conectar', 'disconnect': 'Desconectar'}[action],
+                           lambda: self.bluetooth_action(action, device=device['id']), available and not bt.get('pairing') and not bt.get('connecting'))])
+                if bt.get('pairing'):
+                    self.add('Cancelar emparejamiento', lambda: self.bluetooth_action('cancel', device=bt['pairing']))
+                elif device['paired']:
+                    self.add('Olvidar dispositivo', lambda: self.confirm('¿Borrar el emparejamiento de ' + device['name'] + '?', 'Olvidar',
+                             lambda: self.bluetooth_action('remove', device=device['id'])))
+            else:
+                self.label('El dispositivo ya no está disponible')
+            self.add('Dispositivos', lambda: self.show_setting('Bluetooth'))
+            return
+        elif not bt.get('available'):
+            self.label(bt.get('message', 'Consultando Bluetooth…'))
+            self.add('Actualizar', self.refresh_bluetooth)
+        else:
+            self.row([('Apagar' if bt.get('powered') else 'Encender',
+                       lambda: self.bluetooth_action('power', enabled=not bt.get('powered')), available),
+                      ('Buscando…' if bt.get('discovering') else 'Buscar',
+                       lambda: self.bluetooth_action('scan'), available and bt.get('powered') and not bt.get('discovering'))])
+            devices = bt.get('devices', []) if bt.get('powered') else []
+            pages = max(1, len(devices))
+            self.page = min(self.page, pages - 1)
+            if devices:
+                device = devices[self.page]
+                suffix = ' · conectado' if device['connected'] else ' · emparejado' if device['paired'] else ''
+                def select():
+                    self.bt_device = device['id']
+                    self.render()
+                self.add(device['name'] + suffix, select)
+            else:
+                self.label('Encendé Bluetooth para buscar' if not bt.get('powered') else 'Poné el dispositivo en modo emparejamiento')
+            self.row([('Anterior', lambda: self.change_page(-1), self.page > 0),
+                      ('Siguiente', lambda: self.change_page(1), self.page < pages - 1)])
+        self.add('Volver', lambda: self.show_setting(None))
+
+    def remote_view(self):
+        remote = self.remote
+        if self.setting == 'Configurar nube':
+            self.label('Configurá Google Drive u otro servicio con rclone en una PC.\nDesde la interfaz web local, Ajustes → Nube → Importar, cargá rclone.conf.\nTambién podés usar la configuración del proyecto oficial.')
+            self.add('Volver', lambda: self.show_setting('Nube'))
+        elif self.setting == 'Cuentas':
+            targets = remote.get('targets', [])
+            pages = max(1, (len(targets) + 1) // 2)
+            self.page = min(self.page, pages - 1)
+            for target in targets[self.page * 2:self.page * 2 + 2]:
+                self.add(target['label'] + ' · ' + target['type'], lambda t=target: self.save_remote(True, t['id']))
+            if not targets:
+                self.label('No hay cuentas; abrí Configurar cuenta')
+            self.row([('Anterior', lambda: self.change_page(-1), self.page > 0),
+                      ('Siguiente', lambda: self.change_page(1), self.page < pages - 1)])
+            self.add('Volver', lambda: self.show_setting('Nube'))
+        else:
+            self.label(('Subida automática: activada' if remote.get('enabled') else 'Subida automática: desactivada')
+                       + '\n' + (remote.get('target') or remote.get('message', 'Consultando…')))
+            self.row([('Desactivar' if remote.get('enabled') else 'Activar',
+                       lambda: self.save_remote(not remote.get('enabled'), remote.get('target', '')), bool(remote.get('available'))),
+                      ('Elegir cuenta', lambda: self.show_setting('Cuentas'), bool(remote.get('available')))])
+            self.add('Configurar cuenta', lambda: self.show_setting('Configurar nube'))
+            self.add('Volver', lambda: self.show_setting(None))
+
+    def save_remote(self, enabled, target):
+        self.request('/api/remote', lambda _: self.show_setting('Nube'), {'enabled': enabled, 'target': target})
 
     def refresh_info(self):
         if self.info_pending:

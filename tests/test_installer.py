@@ -111,6 +111,7 @@ class InstallerTests(unittest.TestCase):
             with patch.object(install, 'APP', root / 'app'), patch.object(install, 'ETC', etc), \
                  patch.object(install, 'UNIT', root / 'unit.service'), patch('install.ensure_idle'), \
                  patch('install.shutil.which', return_value='/usr/bin/lsblk'), \
+                 patch('install.check_connectivity_dependencies'), \
                  patch('install.subprocess.run') as run, patch('install.urlopen', return_value=response):
                 install.install('real', new, port=8081)
                 self.assertEqual(install.read_json(etc / 'install.json')['port'], 8081)

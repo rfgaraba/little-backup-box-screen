@@ -127,7 +127,7 @@ class NativeUITests(unittest.TestCase):
             self.assertNotIn('MOTOR REAL', screen.mode.text())
             self.assert_layout(screen)
             self.assertEqual([screen.content.itemAt(i).layout().itemAt(j).widget().full_text
-                              for i in (1, 2) for j in (0, 1)], ['Info', 'Copia', 'Wi-Fi', 'Sistema'])
+                              for i in (1, 2, 3) for j in (0, 1)], ['Info', 'Copia', 'Wi-Fi', 'Bluetooth', 'Nube', 'Sistema'])
             screen.show_setting('Info')
             self.assert_layout(screen)
             for state in ('connected', 'connecting', 'disconnected', 'unavailable'):
@@ -162,6 +162,46 @@ class NativeUITests(unittest.TestCase):
                                     'message': 'Copia completada con éxito'}
             screen.step = 3
             screen.switch('Respaldo')
+            self.assert_layout(screen)
+        finally:
+            screen.timer.stop()
+            screen.close()
+            screen.deleteLater()
+            self.app.processEvents()
+
+    def test_bluetooth_and_remote_screens_fit_and_indicator_hides_when_off(self):
+        from native import Screen
+        screen = Screen()
+        screen.show()
+        try:
+            self.wait_for(lambda: screen.status is not None and not screen.bt_polling)
+            screen.timer.stop()
+            screen.refresh_bluetooth = lambda: None
+            screen.switch('Ajustes')
+            screen.bluetooth = {'available': True, 'powered': True, 'devices': [
+                {'id': '/device', 'name': 'Teclado Bluetooth de prueba', 'address': '12:34:56:78:90:AB',
+                 'paired': True, 'connected': True}]}
+            screen.show_setting('Bluetooth')
+            self.assert_layout(screen)
+            screen.bt_device = '/device'
+            screen.render()
+            self.assert_layout(screen)
+            screen.bluetooth['prompt'] = {'id': 'prompt', 'device': '/device', 'kind': 'confirm', 'code': '000123'}
+            screen.render()
+            self.assert_layout(screen)
+            for state in [{'powered': True, 'connected': True}, {'powered': True}, {'powered': False}]:
+                screen.bluetooth_indicator.set_state(state)
+                self.assertEqual(screen.bluetooth_indicator.isVisible(), state['powered'])
+                self.assertFalse(screen.bluetooth_indicator.grab().isNull())
+            screen.remote = {'available': True, 'enabled': True, 'target': 'cloud:drive',
+                             'targets': [{'id': 'cloud:drive', 'label': 'Mi Google Drive', 'type': 'drive'}]}
+            for name in ['Nube', 'Cuentas', 'Configurar nube', 'Sistema']:
+                screen.setting, screen.page = name, 0
+                screen.render()
+                self.assert_layout(screen)
+            screen.setting = 'Bluetooth'
+            screen.bluetooth = {'available': False, 'message': 'Bluetooth no disponible'}
+            screen.render()
             self.assert_layout(screen)
         finally:
             screen.timer.stop()
